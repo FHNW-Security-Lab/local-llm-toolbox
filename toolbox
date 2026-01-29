@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+set -e
+
+cd "$(dirname "$0")"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+check_nix() {
+    if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+        log_error "Not in nix shell. Run 'nix develop' first."
+        exit 1
+    fi
+}
+
+cmd_start() {
+    check_nix
+    local backend="${1:-}"
+    local force="${2:-}"
+
+    if [[ -z "$backend" ]]; then
+        log_error "Usage: ./toolbox start <backend>"
+        echo ""
+        echo "Available backends:"
+        python -c "
+from manager import get_all_backends
+for name, b in get_all_backends().items():
+    reason = b.get_unavailable_reason()
+    status = f' ({reason})' if reason else ''
+    print(f'  {name:15} {b.display_name}{status}')
+"
+        exit 1
+    fi
+
+    python -c "
+from manager import start_backend
+success, msg = start_backend('$backend', force=True)
+print(msg)
+exit(0 if success else 1)
+"
+}
+
+cmd_stop() {
+    check_nix
+    local backend="${1:-}"
+
+    if [[ -z "$backend" ]]; then
+        # Stop whatever is running
+        python -c "
+from manager import status, stop_backend, get_active_backend
+
+active = get_active_backend()
+if not active:
+    print('No backend running')
+else:
+    if stop_backend(active):
+        print(f'{active.display_name} stopped')
+    else:
+        print(f'Failed to stop {active.display_name}')
+        exit(1)
+"
+    else
+        python -c "
+from manager import get_backend, stop_backend
+
+backend = get_backend('$backend')
+if not backend:
+    print(f'Unknown backend: $backend')
+    exit(1)
+
+if not backend.is_healthy():
+    print(f'{backend.display_name} is not running')
+else:
+    if stop_backend(backend):
+        print(f'{backend.display_name} stopped')
+    else:
+        print(f'Failed to stop {backend.display_name}')
+        exit(1)
+"
+    fi
+}
+
+cmd_status() {
+    check_nix
+    python -c "
+from manager import status, get_all_backends
+
+s = status()
+backends = get_all_backends()
+
+if s.conflict:
+    print('WARNING: Multiple backends running!')
+    for name, healthy in s.backends.items():
+        if healthy:
+            print(f'  - {backends[name].display_name} (running)')
+elif s.active:
+    print(f'Active: {s.active.display_name}')
+    print(f'API:    {s.active.api_base}')
+
+    # Show loaded model if any
+    loaded = s.active.get_loaded_model()
+    if loaded:
+        print(f'Model:  {loaded.name}')
+else:
+    print('No backend running')
+
+print('')
+print('Backends:')
+for name, healthy in s.backends.items():
+    b = backends[name]
+    if healthy:
+        status_str = '●'
+        suffix = ''
+    else:
+        status_str = '○'
+        reason = b.get_unavailable_reason()
+        suffix = f' ({reason})' if reason else ''
+    print(f'  {status_str} {b.display_name}{suffix}')
+"
+}
+
+cmd_models() {
+    check_nix
+    local backend="${1:-}"
+
+    python -c "
+from manager import list_models, get_active_backend, get_all_backends
+
+backend_name = '$backend' or None
+if not backend_name:
+    active = get_active_backend()
+    if active:
+        backend_name = active.name
+    else:
+        print('No backend active. Specify a backend: ./toolbox models <backend>')
+        print('')
+        print('Available backends:')
+        for name, b in get_all_backends().items():
+            if b.is_available():
+                print(f'  {name}')
+        exit(1)
+
+models = list_models(backend_name)
+if not models or not models.get(backend_name):
+    print(f'No models found for {backend_name}')
+    print('')
+    print('Add GGUF models to ~/.local/share/models/')
+    exit(0)
+
+print(f'Models for {backend_name}:')
+for m in models[backend_name]:
+    size_mb = m.size_bytes / (1024 * 1024) if m.size_bytes else 0
+    size_str = f'{size_mb/1024:.1f} GB' if size_mb >= 1024 else f'{size_mb:.0f} MB'
+    quant = f' [{m.quantization}]' if m.quantization else ''
+    print(f'  {m.id}{quant} ({size_str})')
+"
+}
+
+cmd_load() {
+    check_nix
+    local model="${1:-}"
+    local backend="${2:-}"
+
+    if [[ -z "$model" ]]; then
+        log_error "Usage: ./toolbox load <model> [backend]"
+        echo ""
+        echo "Load a model on the active (or specified) backend."
+        echo "List models with: ./toolbox models"
+        exit 1
+    fi
+
+    python -c "
+from manager import load_model, get_active_backend
+
+backend_name = '$backend' or None
+if not backend_name:
+    active = get_active_backend()
+    if active:
+        backend_name = active.name
+    else:
+        print('No backend active. Start one first: ./toolbox start <backend>')
+        exit(1)
+
+success, msg = load_model(backend_name, '$model')
+print(msg)
+exit(0 if success else 1)
+"
+}
+
+cmd_unload() {
+    check_nix
+    local backend="${1:-}"
+
+    python -c "
+from manager import unload_model, get_active_backend
+
+backend_name = '$backend' or None
+if not backend_name:
+    active = get_active_backend()
+    if active:
+        backend_name = active.name
+    else:
+        print('No backend active')
+        exit(0)
+
+success, msg = unload_model(backend_name)
+print(msg)
+exit(0 if success else 1)
+"
+}
+
+cmd_download() {
+    local model="$1"
+    local backend="$2"
+
+    if [[ -z "$model" ]]; then
+        log_error "Usage: ./toolbox download <model> [backend]"
+        echo ""
+        echo "Download a model for a backend."
+        echo ""
+        echo "Arguments:"
+        echo "  model     Model ID to download (e.g., 'phi-4' for Foundry, HuggingFace repo for llama)"
+        echo "  backend   Backend name (default: active backend)"
+        echo ""
+        echo "Examples:"
+        echo "  ./toolbox download phi-4                    # Download for active backend"
+        echo "  ./toolbox download phi-4 foundry            # Download for Foundry"
+        echo "  ./toolbox download bartowski/Qwen2.5-1.5B-Instruct-GGUF llama"
+        exit 1
+    fi
+
+    check_nix
+
+    python -c "
+from manager import download_model, get_active_backend, get_backend
+
+model_id = '$model'
+backend_name = '$backend' or None
+
+if not backend_name:
+    active = get_active_backend()
+    if active:
+        backend_name = active.name
+    else:
+        print('No backend active. Specify a backend: ./toolbox download <model> <backend>')
+        exit(1)
+
+backend = get_backend(backend_name)
+if not backend:
+    print(f'Unknown backend: {backend_name}')
+    exit(1)
+
+if not backend.is_available():
+    print(f'{backend.display_name}: {backend.get_unavailable_reason()}')
+    exit(1)
+
+print(f'Downloading {model_id} for {backend.display_name}...')
+success, msg = download_model(backend_name, model_id)
+print(msg)
+exit(0 if success else 1)
+"
+}
+
+cmd_serve() {
+    check_nix
+    local port="${PORT:-8090}"
+
+    log_info "Starting Local LLM Toolbox..."
+    echo ""
+    echo -e "  Dashboard: ${CYAN}http://localhost:${port}${NC} (Web UI)"
+    echo -e "  API:       ${CYAN}http://localhost:${port}/v1${NC} (OpenAI-compatible)"
+    echo ""
+    log_info "Press Ctrl+C to stop"
+    echo ""
+
+    # Cleanup on exit
+    cleanup() {
+        trap - EXIT INT TERM  # Prevent re-entry
+        echo ""
+        log_info "Stopping..."
+        python -c "from manager import stop_all; stop_all()" 2>/dev/null || true
+        # Kill any orphaned llama-server processes
+        pkill -15 llama-server 2>/dev/null || true
+        log_info "Stopped"
+        exit 0
+    }
+    trap cleanup EXIT INT TERM
+
+    # Run the unified app
+    python -m dashboard
+}
+
+cmd_help() {
+    echo -e "${CYAN}Local LLM Toolbox${NC}"
+    echo ""
+    echo "Usage: ./toolbox <command> [args]"
+    echo ""
+    echo "Backend Commands:"
+    echo "  start <backend>     Start a backend (auto-stops any running)"
+    echo "  stop [backend]      Stop backend (or the active one)"
+    echo "  status              Show current status"
+    echo ""
+    echo "Model Commands:"
+    echo "  models [backend]    List available models"
+    echo "  download <model>    Download a model for active backend"
+    echo "  load <model>        Load a model on active backend"
+    echo "  unload [backend]    Unload the current model"
+    echo ""
+    echo "Services:"
+    echo "  serve               Start the toolbox (dashboard + API)"
+    echo ""
+    echo "Backends:"
+    echo "  llama               llama.cpp with RPC clustering (macOS/Linux, GGUF)"
+    echo "  foundry             Microsoft Foundry Local (macOS/Windows, ONNX)"
+    echo "  vllm                vLLM (Linux + CUDA)"
+    echo "  sglang              SGLang (Linux + CUDA)"
+    echo ""
+    echo "Examples:"
+    echo "  ./toolbox serve"
+    echo "  ./toolbox start llama"
+    echo "  ./toolbox models"
+    echo "  ./toolbox load qwen2.5-0.5b-instruct-q4_k_m"
+}
+
+case "${1:-help}" in
+    start)     cmd_start "$2" "$3" ;;
+    stop)      cmd_stop "$2" ;;
+    status)    cmd_status ;;
+    models)    cmd_models "$2" ;;
+    download)  cmd_download "$2" "$3" ;;
+    load)      cmd_load "$2" "$3" ;;
+    unload)    cmd_unload "$2" ;;
+    serve)     cmd_serve ;;
+    help|-h)   cmd_help ;;
+    *)
+        log_error "Unknown command: $1"
+        cmd_help
+        exit 1
+        ;;
+esac
