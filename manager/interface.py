@@ -41,6 +41,7 @@ class Model:
     quantization: str = ""  # "Q4_K_M", "Q8_0", etc.
     downloaded: bool = False
     source: str = ""  # URL or identifier for downloading
+    task: str = ""  # "chat-completions", "automatic-speech-recognition", "embeddings"
 
 
 @dataclass

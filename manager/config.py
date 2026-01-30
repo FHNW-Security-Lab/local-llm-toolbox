@@ -157,44 +157,11 @@ class SglangSettings(BaseSettings):
     )
 
 
-class RouterSettings(BaseSettings):
-    """
-    Configuration for the API router.
-
-    All settings can be overridden via environment variables with ROUTER_ prefix.
-    """
-    model_config = SettingsConfigDict(
-        env_prefix="ROUTER_",
-        env_file=".env",
-        extra="ignore",
-    )
-
-    port: int = Field(default=5001, description="Port for the router")  # 5000 used by AirPlay
-    health_interval: int = Field(default=5, description="Backend health check interval (seconds)")
-
-
-class DashboardSettings(BaseSettings):
-    """
-    Configuration for the web dashboard.
-
-    All settings can be overridden via environment variables with DASHBOARD_ prefix.
-    """
-    model_config = SettingsConfigDict(
-        env_prefix="DASHBOARD_",
-        env_file=".env",
-        extra="ignore",
-    )
-
-    port: int = Field(default=8090, description="Port for the dashboard")
-
-
 # Singleton instances (created on first access)
 _llama_settings: LlamaSettings | None = None
 _foundry_settings: FoundrySettings | None = None
 _vllm_settings: VllmSettings | None = None
 _sglang_settings: SglangSettings | None = None
-_router_settings: RouterSettings | None = None
-_dashboard_settings: DashboardSettings | None = None
 
 
 def get_llama_settings() -> LlamaSettings:
@@ -227,19 +194,3 @@ def get_sglang_settings() -> SglangSettings:
     if _sglang_settings is None:
         _sglang_settings = SglangSettings()
     return _sglang_settings
-
-
-def get_router_settings() -> RouterSettings:
-    """Get router settings."""
-    global _router_settings
-    if _router_settings is None:
-        _router_settings = RouterSettings()
-    return _router_settings
-
-
-def get_dashboard_settings() -> DashboardSettings:
-    """Get dashboard settings."""
-    global _dashboard_settings
-    if _dashboard_settings is None:
-        _dashboard_settings = DashboardSettings()
-    return _dashboard_settings

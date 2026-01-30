@@ -1,10 +1,15 @@
-"""llama.cpp backend implementation."""
+"""llama.cpp backend implementation.
 
-import asyncio
+This backend manages a local llama-server process with optional RPC clustering
+for distributed inference. All operations are synchronous - async bridging
+is handled by manager/bridge.py.
+"""
+
 import logging
 import shutil
-
-import asyncssh
+import socket
+import subprocess
+import time
 
 from ..base import BaseBackend, has_metal
 from ..config import LlamaSettings, get_llama_settings
@@ -17,7 +22,7 @@ from ..interface import (
     Node,
     NodeStatus,
 )
-from ..process import ProcessManager, wait_for_healthy, check_health_sync
+from ..process import ProcessManager, check_health_sync
 from ..state import get_store
 
 logger = logging.getLogger(__name__)
@@ -29,7 +34,7 @@ class LlamaBackend(BaseBackend):
 
     Supports:
     - Local llama-server process management
-    - Remote RPC servers via SSH
+    - Remote RPC servers via SSH (subprocess-based)
     - GGUF model format
     - Hot model swapping
 
@@ -59,7 +64,6 @@ class LlamaBackend(BaseBackend):
         self._health_url = f"http://localhost:{self.settings.port}/health"
 
         self._process_manager = ProcessManager(graceful_timeout=self.settings.graceful_timeout)
-        self._ssh_conn: asyncssh.SSHClientConnection | None = None
         self._loading = False
         self._error: str | None = None
 
@@ -90,34 +94,40 @@ class LlamaBackend(BaseBackend):
     # ─────────────────────────────────────────────────────────────────
 
     def start(self) -> tuple[bool, str]:
-        """Start the backend (but don't load a model yet)."""
-        # llama.cpp doesn't have a separate "start" - it starts when loading a model
-        # For now, just verify we can run
+        """Start the backend (but don't load a model yet).
+
+        llama.cpp doesn't have a separate "start" - it starts when loading a model.
+        This just verifies availability.
+        """
+        logger.info("LlamaBackend: start() called")
         if not self.is_available():
-            return False, self.get_unavailable_reason() or "Not available"
+            reason = self.get_unavailable_reason() or "Not available"
+            logger.warning(f"LlamaBackend: Not available - {reason}")
+            return False, reason
+        logger.info("LlamaBackend: Ready (load a model to start inference)")
         return True, "Ready (load a model to start inference)"
 
     def stop(self) -> tuple[bool, str]:
         """Stop the backend."""
-        return asyncio.run(self._stop_async())
-
-    async def _stop_async(self) -> tuple[bool, str]:
-        """Async stop implementation."""
+        logger.info("LlamaBackend: stop() called")
         errors = []
 
         # Stop llama-server
         if self._process_manager.is_running("llama-server"):
+            logger.debug("LlamaBackend: Stopping llama-server process")
             success, msg = self._process_manager.stop("llama-server")
             if not success:
+                logger.warning(f"LlamaBackend: Failed to stop llama-server: {msg}")
                 errors.append(msg)
+            else:
+                logger.info("LlamaBackend: llama-server stopped")
 
-        # Stop remote RPC server
+        # Stop remote RPC server via subprocess SSH
         if self.settings.has_remote:
-            if not await self._stop_rpc_server():
+            logger.debug(f"LlamaBackend: Stopping RPC server on {self.settings.rpc_host}")
+            if not self._stop_rpc_server():
+                logger.warning("LlamaBackend: Failed to stop RPC server")
                 errors.append("Failed to stop RPC server")
-
-        # Close SSH connection
-        await self._close_ssh()
 
         # Clear state
         get_store().set_loaded_model(self.name, None)
@@ -125,6 +135,7 @@ class LlamaBackend(BaseBackend):
 
         if errors:
             return False, "; ".join(errors)
+        logger.info("LlamaBackend: Stopped successfully")
         return True, "Stopped"
 
     def get_state(self) -> BackendState:
@@ -159,12 +170,14 @@ class LlamaBackend(BaseBackend):
             model_status=model_status,
             loaded_model=loaded_model,
             model_error=self._error,
-            nodes=self.get_cluster_nodes(),
+            nodes=self.get_cluster_nodes(server_running=is_running),
         )
 
     def is_healthy(self, timeout: float = 2.0) -> bool:
         """Check if llama-server is responding."""
-        return check_health_sync(self._health_url, timeout)
+        healthy = check_health_sync(self._health_url, timeout)
+        logger.debug(f"LlamaBackend: Health check -> {healthy}")
+        return healthy
 
     # ─────────────────────────────────────────────────────────────────
     # Model Management
@@ -174,6 +187,7 @@ class LlamaBackend(BaseBackend):
         """List all GGUF models in the models directory."""
         models = []
         if not self.settings.models_dir.exists():
+            logger.debug(f"LlamaBackend: Models directory does not exist: {self.settings.models_dir}")
             return models
 
         for path in self.settings.models_dir.glob("*.gguf"):
@@ -198,6 +212,7 @@ class LlamaBackend(BaseBackend):
                 source=str(path),
             ))
 
+        logger.debug(f"LlamaBackend: Found {len(models)} models")
         return sorted(models, key=lambda m: m.name)
 
     def list_downloaded_models(self) -> list[Model]:
@@ -205,15 +220,14 @@ class LlamaBackend(BaseBackend):
         return self.list_models()
 
     def download_model(self, model_id: str) -> tuple[bool, str]:
-        """
-        Download a model.
+        """Download a model.
 
         model_id can be:
         - A HuggingFace model ID (e.g., "TheBloke/Llama-2-7B-GGUF")
         - A direct URL to a GGUF file
         """
         # TODO: Implement HuggingFace download
-        # For now, just provide instructions
+        logger.info(f"LlamaBackend: download_model({model_id}) - not implemented")
         return False, (
             f"Automatic download not yet implemented. "
             f"Please download GGUF files manually to {self.settings.models_dir}"
@@ -231,31 +245,41 @@ class LlamaBackend(BaseBackend):
 
         try:
             path.unlink()
+            logger.info(f"LlamaBackend: Deleted model {model_id}")
             return True, f"Deleted {model_id}"
         except Exception as e:
+            logger.error(f"LlamaBackend: Failed to delete {model_id}: {e}")
             return False, f"Failed to delete: {e}"
 
     def load_model(self, model_id: str) -> tuple[bool, str]:
-        """Load a model for inference."""
-        return asyncio.run(self._load_model_async(model_id))
+        """Load a model for inference.
 
-    async def _load_model_async(self, model_id: str) -> tuple[bool, str]:
-        """Async model loading."""
-        import subprocess
+        This is a synchronous, potentially long-running operation.
+        It will:
+        1. Stop any existing llama-server
+        2. Start RPC server on remote node (if configured)
+        3. Start llama-server with the model
+        4. Wait for the server to become healthy
+        """
+        logger.info(f"LlamaBackend: Loading model {model_id}")
+        start_time = time.time()
 
         model_path = self.settings.models_dir / f"{model_id}.gguf"
         if not model_path.exists():
+            logger.warning(f"LlamaBackend: Model not found: {model_path}")
             return False, f"Model '{model_id}' not found"
 
         # Stop existing server if running (managed by us)
         if self._process_manager.is_running("llama-server"):
+            logger.debug("LlamaBackend: Stopping existing llama-server")
             self._process_manager.stop("llama-server")
-            await asyncio.sleep(2)  # Wait for memory release
+            time.sleep(2)  # Wait for memory release
 
         # Kill any orphaned llama-server processes (not managed by us)
+        logger.debug("LlamaBackend: Killing any orphaned llama-server processes")
         try:
             subprocess.run(["pkill", "-15", "llama-server"], capture_output=True, timeout=5)
-            await asyncio.sleep(1)
+            time.sleep(1)
         except Exception:
             pass
 
@@ -265,8 +289,10 @@ class LlamaBackend(BaseBackend):
         try:
             # Start RPC server if configured
             if self.settings.has_remote:
-                if not await self._start_rpc_server():
+                logger.info(f"LlamaBackend: Starting RPC server on {self.settings.rpc_host}")
+                if not self._start_rpc_server():
                     self._error = "Failed to start RPC server"
+                    self._loading = False
                     return False, self._error
 
             # Build llama-server command
@@ -282,39 +308,91 @@ class LlamaBackend(BaseBackend):
             if self.settings.has_remote:
                 cmd.extend(["--rpc", self.settings.rpc_address])
 
+            logger.debug(f"LlamaBackend: Starting llama-server: {' '.join(cmd)}")
+
             # Start llama-server
             success, msg = self._process_manager.start("llama-server", cmd)
             if not success:
                 self._error = msg
+                self._loading = False
+                logger.error(f"LlamaBackend: Failed to start llama-server: {msg}")
                 return False, msg
 
-            # Wait for server to be ready
-            if await wait_for_healthy(self._health_url, timeout=self.settings.load_timeout):
+            # Wait for server to be ready (sync polling)
+            logger.info(f"LlamaBackend: Waiting for server to become healthy (timeout: {self.settings.load_timeout}s)")
+            if self._wait_for_healthy(timeout=self.settings.load_timeout):
                 get_store().set_loaded_model(self.name, model_id)
                 self._loading = False
+                elapsed = time.time() - start_time
+                logger.info(f"LlamaBackend: Model {model_id} loaded in {elapsed:.1f}s")
                 return True, f"Loaded {model_id}"
             else:
                 self._process_manager.stop("llama-server", force=True)
                 self._error = "Server failed to become healthy"
                 self._loading = False
+                logger.error(f"LlamaBackend: {self._error}")
                 return False, self._error
 
         except Exception as e:
             self._error = str(e)
             self._loading = False
-            logger.exception("Model load failed")
+            logger.exception(f"LlamaBackend: Model load failed: {e}")
             return False, str(e)
 
-    def unload_model(self) -> tuple[bool, str]:
-        """Unload the current model."""
-        if not self._process_manager.is_running("llama-server"):
-            get_store().set_loaded_model(self.name, None)
-            return True, "No model loaded"
+    def _wait_for_healthy(self, timeout: float) -> bool:
+        """Wait for llama-server to become healthy.
 
-        success, msg = self._process_manager.stop("llama-server")
-        if success:
-            get_store().set_loaded_model(self.name, None)
-        return success, msg
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if server became healthy, False on timeout
+        """
+        deadline = time.time() + timeout
+        check_count = 0
+        while time.time() < deadline:
+            check_count += 1
+            if check_health_sync(self._health_url, timeout=2.0):
+                logger.debug(f"LlamaBackend: Server healthy after {check_count} checks")
+                return True
+            if check_count % 10 == 0:
+                elapsed = time.time() - (deadline - timeout)
+                logger.debug(f"LlamaBackend: Still waiting for healthy... ({elapsed:.0f}s elapsed)")
+            time.sleep(0.5)
+        logger.warning(f"LlamaBackend: Timeout waiting for healthy after {check_count} checks")
+        return False
+
+    def unload_model(self) -> tuple[bool, str]:
+        """Unload the current model.
+
+        Also stops the RPC server if running on a remote node.
+        """
+        logger.info("LlamaBackend: Unloading model")
+        errors = []
+
+        # Stop llama-server
+        if self._process_manager.is_running("llama-server"):
+            success, msg = self._process_manager.stop("llama-server")
+            if not success:
+                logger.warning(f"LlamaBackend: Failed to stop llama-server: {msg}")
+                errors.append(msg)
+            else:
+                logger.info("LlamaBackend: llama-server stopped")
+        else:
+            logger.debug("LlamaBackend: No llama-server running")
+
+        # Stop remote RPC server if configured
+        if self.settings.has_remote:
+            logger.debug(f"LlamaBackend: Stopping RPC server on {self.settings.rpc_host}")
+            if not self._stop_rpc_server():
+                logger.warning("LlamaBackend: Failed to stop RPC server")
+                errors.append("Failed to stop RPC server")
+
+        get_store().set_loaded_model(self.name, None)
+
+        if errors:
+            return False, "; ".join(errors)
+        return True, "Model unloaded"
 
     def get_loaded_model(self) -> Model | None:
         """Get the currently loaded model."""
@@ -334,12 +412,20 @@ class LlamaBackend(BaseBackend):
     def supports_cluster(self) -> bool:
         return True
 
-    def get_cluster_nodes(self) -> list[Node]:
-        """Get all nodes in the cluster with stats."""
+    def get_cluster_nodes(self, server_running: bool | None = None) -> list[Node]:
+        """Get all nodes in the cluster with stats.
+
+        Args:
+            server_running: If known, whether the server is running (avoids network check).
+                           If None, checks process manager (fast local check).
+        """
         nodes = []
 
-        # Local node with stats
-        local_status = NodeStatus.ONLINE if self.is_healthy() else NodeStatus.OFFLINE
+        # Use provided state or check process manager (fast, no network)
+        if server_running is None:
+            server_running = self._process_manager.is_running("llama-server")
+
+        local_status = NodeStatus.ONLINE if server_running else NodeStatus.OFFLINE
         nodes.append(Node(
             id="local",
             hostname="localhost",
@@ -364,7 +450,6 @@ class LlamaBackend(BaseBackend):
     def _collect_local_stats(self) -> dict:
         """Collect memory/GPU stats from local machine."""
         import platform
-        import subprocess
 
         stats = {
             "gpu_name": "Metal" if has_metal() else "CPU",
@@ -421,15 +506,12 @@ class LlamaBackend(BaseBackend):
                             stats["gpu_memory_used"] = int(parts[1].strip()) * 1024 * 1024
                             stats["gpu_memory_total"] = int(parts[2].strip()) * 1024 * 1024
         except Exception as e:
-            logger.debug(f"Failed to collect local stats: {e}")
+            logger.debug(f"LlamaBackend: Failed to collect local stats: {e}")
 
         return stats
 
     def _collect_remote_stats(self) -> tuple[NodeStatus, dict]:
         """Collect stats from remote node via SSH."""
-        import socket
-        import subprocess
-
         stats = {
             "gpu_name": "",
             "gpu_memory_used": 0,
@@ -457,10 +539,10 @@ class LlamaBackend(BaseBackend):
                 "--format=csv,noheader,nounits 2>/dev/null || true"
             )
             result = subprocess.run(
-                ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+                ["ssh", "-o", f"ConnectTimeout={self.settings.ssh_timeout}", "-o", "StrictHostKeyChecking=no",
                  "-p", str(self.settings.ssh_port),
                  f"{self.settings.ssh_user}@{self.settings.rpc_host}", cmd],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=self.settings.ssh_timeout + 5
             )
             if result.returncode == 0:
                 for line in result.stdout.strip().split("\n"):
@@ -475,7 +557,7 @@ class LlamaBackend(BaseBackend):
                             stats["gpu_memory_used"] = int(parts[1].strip()) * 1024 * 1024
                             stats["gpu_memory_total"] = int(parts[2].strip()) * 1024 * 1024
         except Exception as e:
-            logger.debug(f"Failed to collect remote stats: {e}")
+            logger.debug(f"LlamaBackend: Failed to collect remote stats: {e}")
 
         return NodeStatus.ONLINE, stats
 
@@ -486,6 +568,7 @@ class LlamaBackend(BaseBackend):
             self.settings.rpc_host = ""
             self.settings.ssh_user = ""
             get_store().set_cluster_config(self.name, {})
+            logger.info("LlamaBackend: Cluster configuration cleared")
             return True, "Cluster configuration cleared"
 
         # For now, support single remote node
@@ -505,85 +588,103 @@ class LlamaBackend(BaseBackend):
             "ssh_port": self.settings.ssh_port,
         })
 
+        logger.info(f"LlamaBackend: Configured remote node: {self.settings.rpc_host}")
         return True, f"Configured remote node: {self.settings.rpc_host}"
 
     # ─────────────────────────────────────────────────────────────────
-    # SSH / RPC Management
+    # RPC Server Management (sync, subprocess-based SSH)
     # ─────────────────────────────────────────────────────────────────
 
-    async def _get_ssh(self) -> asyncssh.SSHClientConnection:
-        """Get or create SSH connection."""
-        if self._ssh_conn is not None:
-            try:
-                await asyncio.wait_for(self._ssh_conn.run("true"), timeout=5)
-                return self._ssh_conn
-            except Exception:
-                await self._close_ssh()
+    def _start_rpc_server(self) -> bool:
+        """Start RPC server on remote node via SSH.
 
-        logger.info(f"SSH connecting to {self.settings.rpc_host}...")
-        self._ssh_conn = await asyncio.wait_for(
-            asyncssh.connect(
-                self.settings.rpc_host,
-                port=self.settings.ssh_port,
-                username=self.settings.ssh_user,
-                known_hosts=None,
-            ),
-            timeout=self.settings.ssh_timeout,
-        )
-        return self._ssh_conn
-
-    async def _close_ssh(self):
-        """Close SSH connection."""
-        if self._ssh_conn:
-            self._ssh_conn.close()
-            await self._ssh_conn.wait_closed()
-            self._ssh_conn = None
-
-    async def _run_remote(self, cmd: str, timeout: int = 30) -> bool:
-        """Run command on remote node."""
+        Returns:
+            True if RPC server started and is reachable
+        """
         if not self.settings.has_remote:
             return True
+
+        logger.info(f"LlamaBackend: Starting RPC server on {self.settings.rpc_host}:{self.settings.rpc_port}")
+
+        # Stop any existing RPC server - this is CRITICAL when switching models
+        # The old RPC server holds the old model weights in memory
+        # We must ensure it's fully dead before starting a new one
+        self._stop_rpc_server()
+        time.sleep(2)  # Give time for graceful shutdown
+
+        # Verify the old server is gone by checking if port is free
+        # If still bound, force kill
         try:
-            ssh = await self._get_ssh()
-            result = await asyncio.wait_for(ssh.run(cmd), timeout=timeout)
-            return result.returncode == 0
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            if sock.connect_ex((self.settings.rpc_host, self.settings.rpc_port)) == 0:
+                sock.close()
+                logger.warning("LlamaBackend: RPC port still in use, force killing")
+                self._stop_rpc_server(force=True)
+                time.sleep(2)
+            else:
+                sock.close()
+        except Exception:
+            pass
+
+        # Start RPC server via SSH
+        try:
+            cmd = f"nohup rpc-server --host 0.0.0.0 --port {self.settings.rpc_port} > /tmp/rpc-server.log 2>&1 &"
+            result = subprocess.run(
+                ["ssh", "-o", f"ConnectTimeout={self.settings.ssh_timeout}", "-o", "StrictHostKeyChecking=no",
+                 "-p", str(self.settings.ssh_port),
+                 f"{self.settings.ssh_user}@{self.settings.rpc_host}", cmd],
+                capture_output=True, timeout=self.settings.ssh_timeout + 5
+            )
+            logger.debug(f"LlamaBackend: SSH start RPC result: rc={result.returncode}")
         except Exception as e:
-            logger.error(f"SSH command failed: {e}")
+            logger.error(f"LlamaBackend: Failed to start RPC server via SSH: {e}")
             return False
 
-    async def _start_rpc_server(self) -> bool:
-        """Start RPC server on remote node."""
-        if not self.settings.has_remote:
-            return True
-
-        logger.info("Starting remote rpc-server...")
-        await self._run_remote("pkill -15 rpc-server || true")
-        await asyncio.sleep(1)
-
-        cmd = f"nohup rpc-server --host 0.0.0.0 --port {self.settings.rpc_port} > /tmp/rpc-server.log 2>&1 &"
-        await self._run_remote(cmd)
-
-        # Wait for RPC port
-        for _ in range(60):
+        # Wait for RPC port to be reachable
+        logger.debug("LlamaBackend: Waiting for RPC port to be reachable...")
+        for i in range(60):
             try:
-                r, w = await asyncio.wait_for(
-                    asyncio.open_connection(self.settings.rpc_host, self.settings.rpc_port),
-                    timeout=2,
-                )
-                w.close()
-                await w.wait_closed()
-                logger.info("RPC server ready")
-                return True
-            except (OSError, asyncio.TimeoutError):
-                await asyncio.sleep(1)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                if sock.connect_ex((self.settings.rpc_host, self.settings.rpc_port)) == 0:
+                    sock.close()
+                    logger.info("LlamaBackend: RPC server ready")
+                    return True
+                sock.close()
+            except Exception:
+                pass
+            if i > 0 and i % 10 == 0:
+                logger.debug(f"LlamaBackend: Still waiting for RPC server... ({i}s)")
+            time.sleep(1)
 
-        logger.error("RPC server failed to start")
+        logger.error("LlamaBackend: RPC server failed to start (timeout)")
         return False
 
-    async def _stop_rpc_server(self, force: bool = False) -> bool:
-        """Stop RPC server on remote node."""
+    def _stop_rpc_server(self, force: bool = False) -> bool:
+        """Stop RPC server on remote node via SSH.
+
+        Args:
+            force: If True, use SIGKILL instead of SIGTERM
+
+        Returns:
+            True if command executed (doesn't guarantee server stopped)
+        """
         if not self.settings.has_remote:
             return True
+
         sig = "-9" if force else "-15"
-        logger.info(f"Stopping rpc-server (force={force})")
-        return await self._run_remote(f"pkill {sig} rpc-server || true")
+        logger.debug(f"LlamaBackend: Stopping RPC server (force={force})")
+
+        try:
+            subprocess.run(
+                ["ssh", "-o", f"ConnectTimeout={self.settings.ssh_timeout}", "-o", "StrictHostKeyChecking=no",
+                 "-p", str(self.settings.ssh_port),
+                 f"{self.settings.ssh_user}@{self.settings.rpc_host}",
+                 f"pkill {sig} rpc-server || true"],
+                capture_output=True, timeout=self.settings.ssh_timeout + 5
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"LlamaBackend: Failed to stop RPC server: {e}")
+            return False

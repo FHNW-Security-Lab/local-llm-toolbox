@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local LLM Toolbox</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="layout">
+        <!-- Left Panel - Controls -->
+        <div class="control-panel">
+            <h1>Local LLM Toolbox</h1>
+
+            <div class="status-bar" id="status-bar">
+                <span class="status-indicator inactive"></span>Loading...
+            </div>
+
+            <div id="nodes-section" style="display: none;">
+                <h2>Cluster</h2>
+                <div class="cards" id="nodes"></div>
+            </div>
+
+            <h2>Backends</h2>
+            <div class="cards" id="backends"></div>
+
+            <div id="models-section" style="display: none;">
+                <h2>Models</h2>
+                <div class="cards" id="models"></div>
+            </div>
+        </div>
+
+        <!-- Right Panel - Chat -->
+        <div class="chat-panel">
+            <div class="chat-header" id="chat-header">
+                <strong>Chat</strong> - No model loaded
+            </div>
+            <div class="chat-messages" id="chat-messages">
+                <div class="empty-chat" id="empty-chat">
+                    Load a model to start chatting
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <div class="chat-input-wrapper">
+                    <textarea
+                        class="chat-input"
+                        id="chat-input"
+                        placeholder="Type a message..."
+                        rows="1"
+                        disabled
+                    ></textarea>
+                    <button class="send-btn" id="send-btn" disabled>Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

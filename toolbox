@@ -67,6 +67,8 @@ else:
         exit(1)
 "
     else
+        # Stop specific backend - just call stop(), trust the result
+        # Don't check is_healthy() first - that can trigger expensive SDK init
         python -c "
 from manager import get_backend, stop_backend
 
@@ -75,14 +77,11 @@ if not backend:
     print(f'Unknown backend: $backend')
     exit(1)
 
-if not backend.is_healthy():
-    print(f'{backend.display_name} is not running')
+if stop_backend(backend):
+    print(f'{backend.display_name} stopped')
 else:
-    if stop_backend(backend):
-        print(f'{backend.display_name} stopped')
-    else:
-        print(f'Failed to stop {backend.display_name}')
-        exit(1)
+    print(f'Failed to stop {backend.display_name}')
+    exit(1)
 "
     fi
 }
@@ -142,9 +141,10 @@ if not backend_name:
         print('No backend active. Specify a backend: ./toolbox models <backend>')
         print('')
         print('Available backends:')
-        for name, b in get_all_backends().items():
-            if b.is_available():
-                print(f'  {name}')
+        from manager.registry import get_registry
+        registry = get_registry()
+        for name in registry.get_available().keys():
+            print(f'  {name}')
         exit(1)
 
 models = list_models(backend_name)
@@ -252,13 +252,16 @@ if not backend_name:
         print('No backend active. Specify a backend: ./toolbox download <model> <backend>')
         exit(1)
 
+from manager.registry import get_registry
+registry = get_registry()
+
 backend = get_backend(backend_name)
 if not backend:
     print(f'Unknown backend: {backend_name}')
     exit(1)
 
-if not backend.is_available():
-    print(f'{backend.display_name}: {backend.get_unavailable_reason()}')
+if not registry.is_available(backend_name):
+    print(f'{backend.display_name}: {registry.get_unavailable_reason(backend_name)}')
     exit(1)
 
 print(f'Downloading {model_id} for {backend.display_name}...')
@@ -271,6 +274,15 @@ exit(0 if success else 1)
 cmd_serve() {
     check_nix
     local port="${PORT:-8090}"
+    local debug_flag=""
+
+    # Check for --debug or -d flag
+    for arg in "$@"; do
+        if [[ "$arg" == "--debug" || "$arg" == "-d" ]]; then
+            debug_flag="--debug"
+            log_info "Debug logging enabled"
+        fi
+    done
 
     log_info "Starting Local LLM Toolbox..."
     echo ""
@@ -280,21 +292,21 @@ cmd_serve() {
     log_info "Press Ctrl+C to stop"
     echo ""
 
-    # Cleanup on exit
+    # Cleanup on exit - called when python exits or on signal
     cleanup() {
-        trap - EXIT INT TERM  # Prevent re-entry
+        trap - EXIT INT TERM HUP  # Prevent re-entry
         echo ""
-        log_info "Stopping..."
+        log_info "Stopping backends..."
+        # Stop backends via manager
         python -c "from manager import stop_all; stop_all()" 2>/dev/null || true
         # Kill any orphaned llama-server processes
         pkill -15 llama-server 2>/dev/null || true
         log_info "Stopped"
-        exit 0
     }
-    trap cleanup EXIT INT TERM
+    trap cleanup EXIT
 
     # Run the unified app
-    python -m dashboard
+    python -m dashboard $debug_flag
 }
 
 cmd_help() {
@@ -314,13 +326,12 @@ cmd_help() {
     echo "  unload [backend]    Unload the current model"
     echo ""
     echo "Services:"
-    echo "  serve               Start the toolbox (dashboard + API)"
+    echo "  serve [--debug]     Start the toolbox (dashboard + API)"
+    echo "                      --debug/-d enables verbose logging"
     echo ""
     echo "Backends:"
     echo "  llama               llama.cpp with RPC clustering (macOS/Linux, GGUF)"
     echo "  foundry             Microsoft Foundry Local (macOS/Windows, ONNX)"
-    echo "  vllm                vLLM (Linux + CUDA)"
-    echo "  sglang              SGLang (Linux + CUDA)"
     echo ""
     echo "Examples:"
     echo "  ./toolbox serve"
@@ -337,7 +348,7 @@ case "${1:-help}" in
     download)  cmd_download "$2" "$3" ;;
     load)      cmd_load "$2" "$3" ;;
     unload)    cmd_unload "$2" ;;
-    serve)     cmd_serve ;;
+    serve)     shift; cmd_serve "$@" ;;
     help|-h)   cmd_help ;;
     *)
         log_error "Unknown command: $1"

@@ -14,6 +14,7 @@ from ..interface import (
     NodeStatus,
 )
 from ..process import check_health_sync
+from ..state import get_store
 
 logger = logging.getLogger(__name__)
 
@@ -183,31 +184,31 @@ class FoundryBackend(BaseBackend):
         """Get current backend state."""
         is_running = self.is_healthy()
 
-        # Get loaded model from SDK
+        # Get loaded model from our state store (not SDK - it can return stale data)
         loaded_model = None
         if is_running:
-            manager = self._get_manager()
-            if manager:
-                try:
-                    loaded = manager.list_loaded_models()
-                    if loaded:
-                        # Convert first loaded model to our Model type
-                        info = loaded[0]
-                        loaded_model = Model(
-                            id=info.alias,
-                            name=info.alias,
-                            size_bytes=info.file_size_mb * 1024 * 1024 if info.file_size_mb else None,
-                            format="onnx",
-                            downloaded=True,
-                        )
-                except Exception as e:
-                    logger.debug(f"Failed to get loaded models: {e}")
+            model_id = get_store().get_loaded_model(self.name)
+            if model_id:
+                # Find the model in our list to get full details (including task)
+                for model in self.list_models():
+                    if model.id == model_id:
+                        loaded_model = model
+                        break
+                # Fallback if model not found in list
+                if not loaded_model:
+                    loaded_model = Model(
+                        id=model_id,
+                        name=model_id,
+                        size_bytes=0,
+                        format="onnx",
+                        downloaded=True,
+                    )
 
         return BackendState(
             status=BackendStatus.RUNNING if is_running else BackendStatus.STOPPED,
             model_status=ModelStatus.READY if loaded_model else ModelStatus.IDLE,
             loaded_model=loaded_model,
-            nodes=self.get_cluster_nodes(),
+            nodes=self.get_cluster_nodes(service_running=is_running),
         )
 
     # ─────────────────────────────────────────────────────────────────
@@ -241,12 +242,16 @@ class FoundryBackend(BaseBackend):
                 continue
             seen_aliases.add(info.alias)
 
+            # Get task type from model info (e.g., "chat-completions", "automatic-speech-recognition")
+            task = getattr(info, "task", "") or ""
+
             models.append(Model(
                 id=info.alias,
                 name=info.alias,
-                size_bytes=info.file_size_mb * 1024 * 1024 if info.file_size_mb else None,
+                size_bytes=int(info.file_size_mb * 1024 * 1024) if info.file_size_mb else 0,
                 format="onnx",
                 downloaded=info.alias in cached_aliases,
+                task=task,
             ))
 
         return models
@@ -276,9 +281,33 @@ class FoundryBackend(BaseBackend):
             return False, "SDK not available"
 
         try:
+            # Unload ALL currently loaded models first
+            # Foundry can have multiple models loaded, but we only want one at a time
+            try:
+                loaded = manager.list_loaded_models()
+                logger.debug(f"Foundry: Currently loaded models: {[m.alias for m in loaded] if loaded else 'none'}")
+
+                # Check if requested model is already the only loaded model
+                if len(loaded) == 1 and loaded[0].alias == model_id:
+                    logger.info(f"Foundry: Model {model_id} is already loaded")
+                    return True, f"Model {model_id} is already loaded"
+
+                # Unload ALL loaded models before loading new one
+                for model in loaded:
+                    logger.info(f"Foundry: Unloading model {model.alias}...")
+                    manager.unload_model(model.alias)
+            except Exception as e:
+                logger.debug(f"Foundry: No model to unload or unload failed: {e}")
+
+            logger.info(f"Foundry: Loading model {model_id}...")
             info = manager.load_model(model_id)
+            logger.info(f"Foundry: Model loaded successfully: {info.alias}")
+            # Store in our state (SDK's list_loaded_models can return stale data)
+            get_store().set_loaded_model(self.name, model_id)
             return True, f"Loaded {info.alias}"
         except Exception as e:
+            logger.error(f"Foundry: Failed to load model {model_id}: {e}")
+            get_store().set_loaded_model(self.name, None)
             return False, f"Failed to load: {e}"
 
     def unload_model(self) -> tuple[bool, str]:
@@ -291,6 +320,7 @@ class FoundryBackend(BaseBackend):
             loaded = manager.list_loaded_models()
             for model in loaded:
                 manager.unload_model(model.alias)
+            get_store().set_loaded_model(self.name, None)
             return True, "Model unloaded"
         except Exception as e:
             return False, f"Failed to unload: {e}"
@@ -301,29 +331,49 @@ class FoundryBackend(BaseBackend):
         Returns a Model with:
         - id: The full model ID required by the REST API (e.g., "qwen2.5-0.5b-instruct-generic-gpu:4")
         - name: The alias for display (e.g., "qwen2.5-0.5b")
+
+        Uses our state store (which is authoritative) to determine which model is loaded,
+        then queries the SDK to get the full model ID needed for API calls.
         """
+        # Check our state store first (authoritative)
+        loaded_alias = get_store().get_loaded_model(self.name)
+        if not loaded_alias:
+            return None
+
         manager = self._get_manager()
         if not manager:
             return None
 
         try:
+            # Query SDK for full model details (need the full model ID for API)
             loaded = manager.list_loaded_models()
-            if loaded:
-                info = loaded[0]
-                # The info object from list_loaded_models() has .id with the full model ID
-                # This is required by the REST API (alias doesn't work for /v1/chat/completions)
-                model_id = info.id
-                logger.debug(f"Loaded model: alias={info.alias}, id={model_id}")
-                return Model(
-                    id=model_id,
-                    name=info.alias,  # Keep alias as display name
-                    size_bytes=info.file_size_mb * 1024 * 1024 if info.file_size_mb else None,
-                    format="onnx",
-                    downloaded=True,
-                )
+            # Find the model matching our stored alias
+            for info in loaded:
+                if info.alias == loaded_alias:
+                    model_id = info.id
+                    task = getattr(info, "task", "") or ""
+                    logger.debug(f"Loaded model: alias={info.alias}, id={model_id}, task={task}")
+                    return Model(
+                        id=model_id,
+                        name=info.alias,
+                        size_bytes=int(info.file_size_mb * 1024 * 1024) if info.file_size_mb else 0,
+                        format="onnx",
+                        downloaded=True,
+                        task=task,
+                    )
+            # Model in our state but not found in SDK - SDK may be out of sync
+            logger.warning(f"Foundry: Model {loaded_alias} in state but not in SDK's loaded list")
         except Exception as e:
-            logger.debug(f"Failed to get loaded model: {e}")
-        return None
+            logger.debug(f"Failed to get loaded model details: {e}")
+
+        # Fallback: return basic model info from our state
+        return Model(
+            id=loaded_alias,
+            name=loaded_alias,
+            size_bytes=0,
+            format="onnx",
+            downloaded=True,
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # Cluster (not supported)
@@ -332,10 +382,17 @@ class FoundryBackend(BaseBackend):
     def supports_cluster(self) -> bool:
         return False
 
-    def get_cluster_nodes(self) -> list[Node]:
+    def get_cluster_nodes(self, service_running: bool | None = None) -> list[Node]:
+        """Get cluster nodes (single local node for Foundry).
+
+        Args:
+            service_running: If known, whether service is running (avoids SDK call).
+        """
+        # Use provided value or leave as None (will show as offline if unknown)
+        status = NodeStatus.ONLINE if service_running else NodeStatus.OFFLINE
         return [Node(
             id="local",
             hostname="localhost",
             role="local",
-            status=NodeStatus.ONLINE if self.is_healthy() else NodeStatus.OFFLINE,
+            status=status,
         )]

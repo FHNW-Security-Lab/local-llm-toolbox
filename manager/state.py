@@ -7,21 +7,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class BackendState:
-    """Runtime state for a single backend."""
+class RuntimeState:
+    """Runtime state for a single backend (in-memory only).
+
+    Note: This is different from interface.BackendState which is the full
+    state returned by backends. This tracks minimal runtime info.
+    """
     loaded_model: str | None = None
+    cluster_config: dict = field(default_factory=dict)
 
 
 @dataclass
 class ManagerState:
     """Global manager state (in-memory only)."""
     active_backend: str | None = None
-    backends: dict[str, BackendState] = field(default_factory=dict)
+    backends: dict[str, RuntimeState] = field(default_factory=dict)
 
-    def get_backend_state(self, name: str) -> BackendState:
+    def get_backend_state(self, name: str) -> RuntimeState:
         """Get or create state for a backend."""
         if name not in self.backends:
-            self.backends[name] = BackendState()
+            self.backends[name] = RuntimeState()
         return self.backends[name]
 
 
@@ -37,20 +42,32 @@ class StateStore:
 
     def set_active_backend(self, name: str | None):
         """Set the active backend."""
+        logger.debug(f"Setting active backend: {name}")
         self._state.active_backend = name
 
     def set_loaded_model(self, backend: str, model: str | None):
         """Set the loaded model for a backend."""
+        logger.debug(f"Setting loaded model for {backend}: {model}")
         self._state.get_backend_state(backend).loaded_model = model
 
     def get_loaded_model(self, backend: str) -> str | None:
         """Get the loaded model for a backend."""
         return self._state.get_backend_state(backend).loaded_model
 
+    def set_cluster_config(self, backend: str, config: dict):
+        """Store cluster configuration for a backend."""
+        logger.debug(f"Setting cluster config for {backend}: {config}")
+        self._state.get_backend_state(backend).cluster_config = config
+
+    def get_cluster_config(self, backend: str) -> dict:
+        """Get cluster configuration for a backend."""
+        return self._state.get_backend_state(backend).cluster_config
+
     def clear_backend_state(self, backend: str):
         """Clear state for a backend."""
+        logger.debug(f"Clearing state for {backend}")
         if backend in self._state.backends:
-            self._state.backends[backend] = BackendState()
+            self._state.backends[backend] = RuntimeState()
 
 
 # Global state store instance

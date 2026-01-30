@@ -7,7 +7,6 @@ from ..interface import (
     BackendState,
     BackendStatus,
     Model,
-    ModelStatus,
     Node,
     NodeStatus,
 )

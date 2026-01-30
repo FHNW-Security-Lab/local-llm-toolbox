@@ -1,4 +1,8 @@
-"""Backend registry - single source of truth for available backends."""
+"""Backend registry - single source of truth for available backends.
+
+Availability is checked once at startup and cached. We don't need to handle
+backends being installed while the app is running - just restart to pick them up.
+"""
 
 import logging
 from typing import Iterator
@@ -10,15 +14,25 @@ logger = logging.getLogger(__name__)
 
 
 class BackendRegistry:
-    """Registry of available backends."""
+    """Registry of available backends.
+
+    Caches availability at registration time - availability doesn't change
+    at runtime (if you install a backend, restart the app).
+    """
 
     def __init__(self):
         self._backends: dict[str, Backend] = {}
+        self._availability: dict[str, bool] = {}  # Cached at registration
+        self._unavailable_reasons: dict[str, str | None] = {}  # Cached at registration
 
     def register(self, backend: Backend):
-        """Register a backend."""
+        """Register a backend and cache its availability."""
         self._backends[backend.name] = backend
-        logger.debug(f"Registered backend: {backend.name}")
+        # Cache availability check at registration time (only done once)
+        available = backend.is_available()
+        self._availability[backend.name] = available
+        self._unavailable_reasons[backend.name] = backend.get_unavailable_reason()
+        logger.debug(f"Registered backend: {backend.name} (available={available})")
 
     def get(self, name: str) -> Backend | None:
         """Get a backend by name."""
@@ -28,23 +42,20 @@ class BackendRegistry:
         """Get all registered backends."""
         return self._backends.copy()
 
+    def is_available(self, name: str) -> bool:
+        """Check if a backend is available (cached at startup)."""
+        return self._availability.get(name, False)
+
+    def get_unavailable_reason(self, name: str) -> str | None:
+        """Get reason why backend is unavailable (cached at startup)."""
+        return self._unavailable_reasons.get(name)
+
     def get_available(self) -> dict[str, Backend]:
-        """Get only available backends."""
+        """Get only available backends (uses cached availability)."""
         return {
             name: b for name, b in self._backends.items()
-            if b.is_available()
+            if self._availability.get(name, False)
         }
-
-    def get_active(self) -> Backend | None:
-        """Get the currently active (healthy) backend."""
-        active = [b for b in self._backends.values() if b.is_healthy()]
-        if len(active) == 1:
-            return active[0]
-        return None
-
-    def get_all_active(self) -> list[Backend]:
-        """Get all active backends (should be 0 or 1)."""
-        return [b for b in self._backends.values() if b.is_healthy()]
 
     def __iter__(self) -> Iterator[Backend]:
         return iter(self._backends.values())

@@ -173,12 +173,11 @@ class BaseBackend:
         return False, "Not implemented"
 
     def get_state(self) -> BackendState:
-        if self.is_healthy():
-            return BackendState(
-                status=BackendStatus.RUNNING,
-                nodes=self.get_cluster_nodes(),
-            )
-        return BackendState(status=BackendStatus.STOPPED)
+        healthy = self.is_healthy()
+        return BackendState(
+            status=BackendStatus.RUNNING if healthy else BackendStatus.STOPPED,
+            nodes=self.get_cluster_nodes(healthy),
+        )
 
     def is_healthy(self, timeout: float = 2.0) -> bool:
         if not self.is_available():
@@ -221,14 +220,19 @@ class BaseBackend:
     def supports_cluster(self) -> bool:
         return False
 
-    def get_cluster_nodes(self) -> list[Node]:
-        """Default: return single local node."""
+    def get_cluster_nodes(self, is_running: bool | None = None) -> list[Node]:
+        """Default: return single local node.
+
+        Args:
+            is_running: If known, whether backend is running (avoids duplicate health check).
+        """
+        status = NodeStatus.ONLINE if is_running else NodeStatus.OFFLINE
         return [
             Node(
                 id="local",
                 hostname="localhost",
                 role="local",
-                status=NodeStatus.ONLINE if self.is_healthy() else NodeStatus.OFFLINE,
+                status=status,
             )
         ]
 
