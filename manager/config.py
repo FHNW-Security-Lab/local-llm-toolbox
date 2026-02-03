@@ -30,11 +30,17 @@ class LlamaSettings(BaseSettings):
     ctx_size: int = Field(default=8192, description="Context size in tokens")
     gpu_layers: int = Field(default=99, description="Number of layers to offload to GPU")
 
-    # RPC cluster settings
-    rpc_host: str = Field(default="", description="Remote RPC server hostname")
-    rpc_port: int = Field(default=50052, description="RPC server port")
-    ssh_user: str = Field(default="", description="SSH username for remote nodes")
-    ssh_port: int = Field(default=22, description="SSH port for remote nodes")
+    # RPC cluster settings (for distributed inference)
+    # Workers are specified as comma-separated hostnames/IPs
+    # Example: LLAMA_RPC_WORKERS=192.168.1.10,192.168.1.11
+    rpc_workers: str = Field(
+        default="",
+        description="Comma-separated list of RPC worker hostnames/IPs",
+    )
+    rpc_control_port: int = Field(
+        default=50053,
+        description="Control API port on workers (same for all workers)",
+    )
 
     # Timeouts (in seconds)
     # Large models (70B+) can take 2-3+ hours to download on slower connections
@@ -50,9 +56,9 @@ class LlamaSettings(BaseSettings):
         default=15,
         description="Graceful shutdown timeout (seconds)",
     )
-    ssh_timeout: int = Field(
+    rpc_reset_timeout: int = Field(
         default=30,
-        description="SSH connection timeout (seconds)",
+        description="Timeout for resetting RPC workers (seconds)",
     )
     health_check_interval: int = Field(
         default=10,
@@ -60,16 +66,16 @@ class LlamaSettings(BaseSettings):
     )
 
     @property
-    def has_remote(self) -> bool:
-        """Check if remote RPC is configured."""
-        return bool(self.rpc_host and self.ssh_user)
+    def has_rpc_workers(self) -> bool:
+        """Check if RPC workers are configured."""
+        return bool(self.rpc_workers.strip())
 
     @property
-    def rpc_address(self) -> str:
-        """Get the full RPC address."""
-        if not self.rpc_host:
-            return ""
-        return f"{self.rpc_host}:{self.rpc_port}"
+    def rpc_worker_list(self) -> list[str]:
+        """Get list of RPC worker hostnames/IPs."""
+        if not self.rpc_workers.strip():
+            return []
+        return [w.strip() for w in self.rpc_workers.split(",") if w.strip()]
 
 
 class FoundrySettings(BaseSettings):

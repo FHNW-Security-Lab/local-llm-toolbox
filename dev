@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+#
+# Auto-detect GPU and enter the appropriate nix dev shell
+#
+set -e
+
+cd "$(dirname "$0")"
+
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+detected_gpus=()
+recommended=""
+
+detect_gpus() {
+    # macOS: Metal only
+    if [[ "$(uname)" == "Darwin" ]]; then
+        detected_gpus+=("default:Metal (Apple Silicon)")
+        recommended="default"
+        return
+    fi
+
+    # Linux: check for GPU vendors via lspci
+    if command -v lspci &> /dev/null; then
+        local pci_output
+        pci_output=$(lspci 2>/dev/null || true)
+
+        # NVIDIA discrete GPU
+        if echo "$pci_output" | grep -qi "nvidia"; then
+            detected_gpus+=("nvidia:CUDA (NVIDIA)")
+            recommended="nvidia"
+        fi
+
+        # AMD GPU (integrated or discrete)
+        if echo "$pci_output" | grep -qiE "amd.*(radeon|graphics)|ati.*radeon"; then
+            detected_gpus+=("vulkan:Vulkan (AMD)")
+            [[ -z "$recommended" ]] && recommended="vulkan"
+        fi
+
+        # Intel integrated graphics
+        if echo "$pci_output" | grep -qiE "intel.*(graphics|uhd|iris)"; then
+            detected_gpus+=("vulkan:Vulkan (Intel)")
+            [[ -z "$recommended" ]] && recommended="vulkan"
+        fi
+    fi
+
+    # CPU fallback is always available
+    detected_gpus+=("cpu:CPU only (no GPU acceleration)")
+
+    # If nothing else detected, recommend CPU
+    [[ -z "$recommended" ]] && recommended="cpu"
+}
+
+show_menu() {
+    echo ""
+    echo -e "${CYAN}=== Local LLM Toolbox - Environment Setup ===${NC}"
+    echo ""
+    echo "Detected hardware:"
+
+    local i=1
+    for entry in "${detected_gpus[@]}"; do
+        local shell="${entry%%:*}"
+        local desc="${entry#*:}"
+
+        if [[ "$shell" == "$recommended" ]]; then
+            echo -e "  ${GREEN}[$i] $desc (recommended)${NC}"
+        else
+            echo "  [$i] $desc"
+        fi
+        ((i++))
+    done
+
+    echo "  [q] Quit"
+    echo ""
+}
+
+prompt_user() {
+    local default_idx=1
+
+    # Find index of recommended
+    local i=1
+    for entry in "${detected_gpus[@]}"; do
+        local shell="${entry%%:*}"
+        if [[ "$shell" == "$recommended" ]]; then
+            default_idx=$i
+            break
+        fi
+        ((i++))
+    done
+
+    read -rp "Select option or press Enter load the recommended environment: " choice
+
+    # Y/y/Enter all accept the recommended option
+    if [[ -z "$choice" || "$choice" == "y" || "$choice" == "Y" ]]; then
+        choice=$default_idx
+    fi
+
+    if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+        echo "Cancelled."
+        exit 0
+    fi
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#detected_gpus[@]} )); then
+        echo "Invalid selection."
+        exit 1
+    fi
+
+    local selected="${detected_gpus[$((choice-1))]}"
+    local shell="${selected%%:*}"
+    local desc="${selected#*:}"
+
+    echo ""
+    echo -e "Starting ${GREEN}$desc${NC} environment..."
+    echo ""
+
+    exec nix develop ".#$shell" "$@"
+}
+
+# Allow direct override: ./dev nvidia
+if [[ -n "$1" && "$1" != "-"* ]]; then
+    echo "Starting $1 environment..."
+    exec nix develop ".#$1"
+fi
+
+detect_gpus
+show_menu
+prompt_user "$@"

@@ -309,35 +309,103 @@ cmd_serve() {
     python -m dashboard $debug_flag
 }
 
+cmd_rpc() {
+    check_nix
+    local backend="${1:-}"
+    shift || true
+
+    if [[ -z "$backend" ]]; then
+        log_error "Usage: ./toolbox rpc <backend> [options]"
+        echo ""
+        echo "Start an RPC worker for distributed inference."
+        echo ""
+        echo "Supported backends:"
+        echo "  llama     llama.cpp RPC worker"
+        echo ""
+        echo "Options for 'llama':"
+        echo "  --rpc-port <port>      RPC server port (default: 50052)"
+        echo "  --control-port <port>  Control API port (default: 50053)"
+        echo ""
+        echo "Example:"
+        echo "  ./toolbox rpc llama"
+        echo "  ./toolbox rpc llama --rpc-port 50052 --control-port 50053"
+        exit 1
+    fi
+
+    case "$backend" in
+        llama)
+            cmd_rpc_llama "$@"
+            ;;
+        *)
+            log_error "Unknown backend for RPC: $backend"
+            echo "Supported: llama"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_rpc_llama() {
+    local rpc_port="${LLAMA_RPC_PORT:-50052}"
+    local control_port="${LLAMA_RPC_CONTROL_PORT:-50053}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --rpc-port)
+                rpc_port="$2"
+                shift 2
+                ;;
+            --control-port)
+                control_port="$2"
+                shift 2
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    log_info "Starting llama.cpp RPC worker..."
+    echo ""
+    echo -e "  RPC server:   ${CYAN}0.0.0.0:${rpc_port}${NC} (tensor offload)"
+    echo -e "  Control API:  ${CYAN}0.0.0.0:${control_port}${NC} (management)"
+    echo ""
+    log_info "Press Ctrl+C to stop"
+    echo ""
+
+    python -c "
+from manager.rpc import RpcWorkerServer
+
+server = RpcWorkerServer(
+    rpc_port=$rpc_port,
+    control_port=$control_port,
+)
+server.run()
+"
+}
+
 cmd_help() {
     echo -e "${CYAN}Local LLM Toolbox${NC}"
     echo ""
     echo "Usage: ./toolbox <command> [args]"
     echo ""
-    echo "Backend Commands:"
-    echo "  start <backend>     Start a backend (auto-stops any running)"
-    echo "  stop [backend]      Stop backend (or the active one)"
+    echo "Commands:"
+    echo "  serve               Start the dashboard + API server"
+    echo "  start <backend>     Start a backend (llama, foundry)"
+    echo "  stop [backend]      Stop the active backend"
     echo "  status              Show current status"
-    echo ""
-    echo "Model Commands:"
     echo "  models [backend]    List available models"
-    echo "  download <model>    Download a model for active backend"
-    echo "  load <model>        Load a model on active backend"
-    echo "  unload [backend]    Unload the current model"
-    echo ""
-    echo "Services:"
-    echo "  serve [--debug]     Start the toolbox (dashboard + API)"
-    echo "                      --debug/-d enables verbose logging"
-    echo ""
-    echo "Backends:"
-    echo "  llama               llama.cpp with RPC clustering (macOS/Linux, GGUF)"
-    echo "  foundry             Microsoft Foundry Local (macOS/Windows, ONNX)"
+    echo "  load <model>        Load a model"
+    echo "  unload              Unload current model"
+    echo "  download <model>    Download a model"
+    echo "  rpc <backend>       Start as RPC worker (for distributed inference)"
     echo ""
     echo "Examples:"
-    echo "  ./toolbox serve"
-    echo "  ./toolbox start llama"
-    echo "  ./toolbox models"
-    echo "  ./toolbox load qwen2.5-0.5b-instruct-q4_k_m"
+    echo "  ./toolbox serve                    # Start dashboard at :8090"
+    echo "  ./toolbox start llama && ./toolbox load my-model"
+    echo ""
+    echo "See './toolbox rpc' for distributed inference setup."
 }
 
 case "${1:-help}" in
@@ -349,6 +417,7 @@ case "${1:-help}" in
     load)      cmd_load "$2" "$3" ;;
     unload)    cmd_unload "$2" ;;
     serve)     shift; cmd_serve "$@" ;;
+    rpc)       shift; cmd_rpc "$@" ;;
     help|-h)   cmd_help ;;
     *)
         log_error "Unknown command: $1"

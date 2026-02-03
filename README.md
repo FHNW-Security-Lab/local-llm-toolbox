@@ -38,11 +38,34 @@
 git clone https://github.com/your-org/local-llm-toolbox.git
 cd local-llm-toolbox
 
-# Enter the Nix development environment
-nix develop
+# Enter the development environment (auto-detects GPU)
+./dev
 
 # Start the toolbox
 ./toolbox serve
+```
+
+The `./dev` script auto-detects your GPU and selects the appropriate environment:
+- **macOS**: Metal (Apple Silicon)
+- **Linux with NVIDIA**: CUDA
+- **Linux with AMD/Intel**: Vulkan
+- **No GPU**: CPU-only with BLAS
+
+You can also select a specific environment directly:
+
+```bash
+./dev nvidia   # CUDA (NVIDIA GPU)
+./dev vulkan   # Vulkan (AMD/Intel)
+./dev cpu      # CPU only (BLAS)
+```
+
+Or use Nix directly:
+
+```bash
+nix develop           # Default (Vulkan on Linux, Metal on macOS)
+nix develop .#nvidia  # CUDA
+nix develop .#vulkan  # Vulkan
+nix develop .#cpu     # CPU only
 ```
 
 The dashboard will be available at http://localhost:8090
@@ -103,6 +126,9 @@ From the dashboard you can:
 ./toolbox load <model>     # Load a model
 ./toolbox unload           # Unload current model
 ./toolbox download <model> # Download a model (Foundry only)
+
+# RPC worker (run on worker machines for distributed inference)
+./toolbox rpc llama        # Start as RPC worker
 ```
 
 ### OpenAI-Compatible API
@@ -167,37 +193,57 @@ See `config.env.example` for all available options.
 
 Distribute inference across multiple machines using llama.cpp's RPC feature.
 
-### Requirements
+### Setup
 
-- SSH access to the remote machine (key-based auth recommended)
-- `rpc-server` from llama.cpp installed on the remote machine
-- The remote `rpc-server` binary must be in PATH when SSH connects
+**1. On each worker machine:**
 
-### Setup via Dashboard
-
-1. Start the llama.cpp backend
-2. Click "Configure Cluster" in the dashboard
-3. Enter the remote host details:
-   - Hostname/IP
-   - SSH username
-   - SSH port (default: 22)
-   - RPC port (default: 50052)
-4. Save the configuration
-
-The toolbox will SSH into the remote machine, start the RPC server, and configure llama-server to use it.
-
-### Setup via Environment Variables
+Clone the repo and start the RPC worker:
 
 ```bash
-LLAMA_RPC_HOST=192.168.1.100
-LLAMA_SSH_USER=llm
-LLAMA_SSH_PORT=22
-LLAMA_RPC_PORT=50052
-LLAMA_SSH_TIMEOUT=30
+git clone https://github.com/your-org/local-llm-toolbox.git
+cd local-llm-toolbox
+./dev
+./toolbox rpc llama
 ```
 
-### Limitations
+The worker will start:
+- RPC server on port 50052 (tensor offload)
+- Control API on port 50053 (management)
 
-- Currently supports only one remote node
-- The remote machine must have `rpc-server` in PATH when SSH connects
-- If you use a custom environment (conda, nix), ensure it's activated in your shell profile
+**2. On the main machine:**
+
+Configure workers in `.env`:
+
+```bash
+LLAMA_RPC_WORKERS=192.168.1.10,192.168.1.11
+```
+
+Then start normally:
+
+```bash
+./toolbox serve
+./toolbox start llama
+./toolbox load my-model
+```
+
+The main node will automatically reset all workers before loading each model, ensuring a clean state.
+
+### How It Works
+
+- Workers expose GPU/CPU compute via llama.cpp's `rpc-server`
+- The main node's control API resets workers before each model load
+- Model weights are distributed across all nodes proportionally to available memory
+- Tensor caching (`-c` flag) speeds up repeated model loads
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLAMA_RPC_WORKERS` | (empty) | Comma-separated worker IPs/hostnames |
+| `LLAMA_RPC_CONTROL_PORT` | 50053 | Control API port on workers |
+
+### Notes
+
+- Workers must be started manually on each machine
+- If the main node crashes, workers may need a restart to clear leaked GPU memory
+- Use `./toolbox rpc llama --help` for worker options
