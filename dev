@@ -50,7 +50,7 @@ detect_gpus() {
     detected_gpus+=("cpu:CPU only (no GPU acceleration)")
 
     # If nothing else detected, recommend CPU
-    [[ -z "$recommended" ]] && recommended="cpu"
+    [[ -z "$recommended" ]] && recommended="cpu" || true
 }
 
 show_menu() {
