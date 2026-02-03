@@ -35,7 +35,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/local-llm-toolbox.git
+git clone https://github.com/FHNW-Security-Lab/local-llm-toolbox.git
 cd local-llm-toolbox
 
 # Enter the development environment (auto-detects GPU)
