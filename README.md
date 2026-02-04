@@ -184,7 +184,7 @@ cp config.env.example .env
 | `LLAMA_MODELS_DIR` | ~/.local/share/models | Where to look for GGUF models |
 | `LLAMA_PORT` | 8080 | llama-server port |
 | `LLAMA_CTX_SIZE` | 8192 | Context window size |
-| `LLAMA_GPU_LAYERS` | 99 | Layers to offload to GPU |
+| `LLAMA_GPU_LAYERS` | all | Layers to offload: number, 'auto', or 'all' |
 | `FOUNDRY_PORT` | 5273 | Foundry service port |
 
 See `config.env.example` for all available options.

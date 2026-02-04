@@ -311,7 +311,7 @@ class LlamaBackend(BaseBackend):
                 "--host", self.settings.host,
                 "--port", str(self.settings.port),
                 "--model", str(model_path),
-                "--n-gpu-layers", str(self.settings.gpu_layers),
+                "--n-gpu-layers", self.settings.gpu_layers,
                 "--ctx-size", str(self.settings.ctx_size),
             ]
 

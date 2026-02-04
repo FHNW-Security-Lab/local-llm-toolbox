@@ -28,7 +28,7 @@ class LlamaSettings(BaseSettings):
     host: str = Field(default="0.0.0.0", description="Host to bind to")
     port: int = Field(default=8080, description="Port for the llama-server")
     ctx_size: int = Field(default=8192, description="Context size in tokens")
-    gpu_layers: int = Field(default=99, description="Number of layers to offload to GPU")
+    gpu_layers: str = Field(default="all", description="Layers to offload: number, 'auto', or 'all'")
 
     # RPC cluster settings (for distributed inference)
     # Workers are specified as comma-separated hostnames/IPs
