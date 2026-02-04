@@ -42,10 +42,10 @@
           pkgs = nixpkgs.legacyPackages.${system};
           isLinux = pkgs.stdenv.isLinux;
 
-          llamaVulkan = pkgs.llama-cpp.override { vulkanSupport = true; };
-          llamaCuda = pkgs.llama-cpp.override { cudaSupport = true; };
-          llamaMetal = pkgs.llama-cpp;  # Metal is default on Darwin
-          llamaCpu = pkgs.llama-cpp.override { blasSupport = true; };
+          llamaVulkan = pkgs.llama-cpp.override { vulkanSupport = true; rpcSupport = true; };
+          llamaCuda = pkgs.llama-cpp.override { cudaSupport = true; rpcSupport = true; };
+          llamaMetal = pkgs.llama-cpp.override { rpcSupport = true; };  # Metal is default on Darwin
+          llamaCpu = pkgs.llama-cpp.override { blasSupport = true; rpcSupport = true;};
         in {
           # Default: Vulkan on Linux, Metal on macOS
           default = mkShell pkgs

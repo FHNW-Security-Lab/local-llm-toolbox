@@ -296,11 +296,14 @@ class LlamaBackend(BaseBackend):
             if self.settings.has_rpc_workers:
                 logger.info(f"LlamaBackend: Resetting RPC workers: {self.settings.rpc_worker_list}")
                 rpc_result = self._reset_rpc_workers()
-                if not rpc_result["success"]:
-                    self._error = rpc_result["message"]
-                    self._loading = False
-                    return False, self._error
-                self._rpc_addresses = rpc_result["rpc_addresses"]
+                if rpc_result["success"] and rpc_result["rpc_addresses"]:
+                    self._rpc_addresses = rpc_result["rpc_addresses"]
+                else:
+                    # RPC workers unavailable - continue in single-node mode
+                    logger.warning(
+                        f"LlamaBackend: RPC workers unavailable ({rpc_result['message']}), "
+                        "continuing in single-node mode"
+                    )
 
             # Build llama-server command
             cmd = [

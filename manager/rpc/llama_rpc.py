@@ -188,7 +188,7 @@ class RpcWorkerServer:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                start_new_session=True,  # Detach from parent
+                start_new_session=False,  # Detach from parent
             )
             self._rpc_start_time = time.time()
             logger.info(f"rpc-server started with PID {self._rpc_process.pid}")
