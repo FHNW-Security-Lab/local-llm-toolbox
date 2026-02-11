@@ -52,7 +52,8 @@ check_system() {
 
     local needs_system_manager=false
     local needs_grub=false
-    local needs_relogin=false
+    local has_group_issues=false
+    local ran_system_manager=false
 
     for issue in "${issues[@]}"; do
         case "$issue" in
@@ -60,7 +61,7 @@ check_system() {
                 local grp="${issue#group:}"
                 echo -e "  ${RED}✗${NC} User not in '${grp}' group (needed for GPU device access)"
                 needs_system_manager=true
-                needs_relogin=true
+                has_group_issues=true
                 ;;
             opengl-driver)
                 echo -e "  ${RED}✗${NC} /run/opengl-driver missing (needed for Nix programs to find GPU drivers)"
@@ -81,13 +82,15 @@ check_system() {
         echo ""
         read -rp "Run system-manager now? [Y/n] " ans
         if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
+            local nix_bin
+            nix_bin=$(command -v nix)
             echo ""
-            echo "Running: sudo nix run 'github:numtide/system-manager' -- switch --flake '.'"
+            echo "Running: sudo $nix_bin --extra-experimental-features 'nix-command flakes' run 'github:numtide/system-manager' -- switch --flake '.'"
             echo ""
-            sudo nix run 'github:numtide/system-manager' -- switch --flake '.'
+            sudo "$nix_bin" --extra-experimental-features 'nix-command flakes' run 'github:numtide/system-manager' -- switch --flake '.'
             echo ""
             echo -e "${GREEN}system-manager applied successfully.${NC}"
-            needs_relogin=true
+            ran_system_manager=true
         else
             echo -e "${YELLOW}Skipped.${NC} You can run it manually later (see SETUP.md Step 8)."
         fi
@@ -100,8 +103,8 @@ check_system() {
         echo ""
     fi
 
-    # If group changes were made, user needs to re-login
-    if $needs_relogin && $needs_system_manager; then
+    # If group changes were applied, user needs to re-login
+    if $ran_system_manager && $has_group_issues; then
         echo -e "${YELLOW}You need to logout and login again for group membership to take effect.${NC}"
         echo "After re-login, run ./dev again."
         exit 0

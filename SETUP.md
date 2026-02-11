@@ -106,7 +106,7 @@ This uses [system-manager](https://github.com/numtide/system-manager) to declara
 - **GPU device access** — adds your user to the `render` and `video` groups
 
 ```bash
-sudo nix run 'github:numtide/system-manager' -- switch --flake '.'
+sudo nix --extra-experimental-features 'nix-command flakes' run 'github:numtide/system-manager' -- switch --flake '.'
 ```
 
 **Logout and login again** (for group membership to take effect).

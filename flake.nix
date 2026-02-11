@@ -84,10 +84,14 @@
       # One-time activation:
       #   sudo nix run 'github:numtide/system-manager' -- switch --flake '.'
       #
-      # Uses $USER at evaluation time to set group membership.
+      # Uses $SUDO_USER at evaluation time to set group membership
+      # (falls back to $USER if not running under sudo).
       systemConfigs = let
         linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
-        username = builtins.getEnv "USER";
+        username = let
+          sudoUser = builtins.getEnv "SUDO_USER";
+          user = builtins.getEnv "USER";
+        in if sudoUser != "" then sudoUser else user;
       in nixpkgs.lib.genAttrs linuxSystems (system: {
         default = system-manager.lib.makeSystemConfig {
           modules = [
