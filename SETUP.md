@@ -59,14 +59,20 @@ sudo apt update && sudo apt install linux-firmware && sudo reboot
 Verify: `ls /dev/dri/` should show `card0` and `renderD128`.
 
 ### Step 5: GPU Access Permissions
-```bash
-sudo usermod -aG render $USER
-sudo usermod -aG video $USER
-```
 
-**Logout and login again.**
+Handled automatically by system-manager in Step 7 (adds your user to `render` and `video` groups).
 
-Symptoms if skipped: `llama-server --list-devices` shows nothing, permission denied errors.
+<details>
+<summary>Manual fallback (if not using system-manager)</summary>
+
+<p>sudo usermod -aG render $USER</p>
+<p>sudo usermod -aG video $USER</p>
+
+</details>
+
+
+
+Symptoms if missing: `llama-server --list-devices` shows nothing, permission denied errors.
 
 ### Step 6: AMD GPU Memory Configuration
 
@@ -87,9 +93,26 @@ sudo update-grub && sudo reboot
 
 Verify: `cat /sys/class/drm/card0/device/mem_info_gtt_total` should show ~137438953472 (128GB).
 
-### Step 7: Clone and Enter Toolbox
+### Step 7: Clone and Set Up Toolbox
 ```bash
 git clone https://github.com/FHNW-Security-Lab/local-llm-toolbox ~/local-llm-toolbox
+cd ~/local-llm-toolbox
+```
+
+### Step 8: System Configuration (one-time)
+
+This uses [system-manager](https://github.com/numtide/system-manager) to declaratively configure:
+- **GPU driver visibility** — creates `/run/opengl-driver` symlink so Nix-built programs find GPU drivers (via [nix-system-graphics](https://github.com/soupglasses/nix-system-graphics))
+- **GPU device access** — adds your user to the `render` and `video` groups
+
+```bash
+sudo nix run 'github:numtide/system-manager' -- switch --flake '.'
+```
+
+**Logout and login again** (for group membership to take effect).
+
+### Step 9: Enter Toolbox and Verify
+```bash
 cd ~/local-llm-toolbox
 nix develop
 ```
@@ -195,13 +218,7 @@ _tba_
 | Problem                      | Check                                                        |
 | ---------------------------- | ------------------------------------------------------------ |
 | GPU not detected             | `groups` should include `render`; `ls -la /dev/dri/`         |
+| Nix programs can't find GPU  | Run `ls -la /run/opengl-driver`; if missing, run system-manager (Step 8) |
 | RPC connection failed        | Worker running? `ss -tlnp \| grep 50052`; Ping works?        |
 | Out of memory                | `cat /proc/cmdline`; `cat /sys/class/drm/card0/device/mem_info_gtt_total` |
 | Vulkan "INCOMPATIBLE_DRIVER" | Permission denied - check `render` group membership          |
-
-|      |      |
-|---------|-------|
-|      |      |
-|      |      |
-|      |      |
-|      |      |

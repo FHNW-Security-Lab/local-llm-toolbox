@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Auto-detect GPU and enter the appropriate nix dev shell
+# Auto-detect GPU, check system configuration, and enter the appropriate nix dev shell
 #
 set -e
 
@@ -9,10 +9,212 @@ cd "$(dirname "$0")"
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 detected_gpus=()
 recommended=""
+
+# ── System checks (Linux only) ──────────────────────────────────────────────
+
+check_system() {
+    [[ "$(uname)" == "Darwin" ]] && return
+
+    local issues=()
+
+    # Check group membership
+    if ! groups 2>/dev/null | grep -qw render; then
+        issues+=("group:render")
+    fi
+    if ! groups 2>/dev/null | grep -qw video; then
+        issues+=("group:video")
+    fi
+
+    # Check /run/opengl-driver symlink (nix-system-graphics)
+    if [[ ! -e /run/opengl-driver ]]; then
+        issues+=("opengl-driver")
+    fi
+
+    # Check GRUB GTT config for AMD APUs
+    if lspci 2>/dev/null | grep -qiE "amd.*(radeon|graphics)|ati.*radeon"; then
+        if ! grep -q "amdgpu.gttsize" /proc/cmdline 2>/dev/null; then
+            issues+=("gtt")
+        fi
+    fi
+
+    [[ ${#issues[@]} -eq 0 ]] && return
+
+    echo ""
+    echo -e "${YELLOW}=== System Configuration ===${NC}"
+    echo ""
+    echo "Some system settings need attention for GPU acceleration:"
+    echo ""
+
+    local needs_system_manager=false
+    local needs_grub=false
+    local needs_relogin=false
+
+    for issue in "${issues[@]}"; do
+        case "$issue" in
+            group:*)
+                local grp="${issue#group:}"
+                echo -e "  ${RED}✗${NC} User not in '${grp}' group (needed for GPU device access)"
+                needs_system_manager=true
+                needs_relogin=true
+                ;;
+            opengl-driver)
+                echo -e "  ${RED}✗${NC} /run/opengl-driver missing (needed for Nix programs to find GPU drivers)"
+                needs_system_manager=true
+                ;;
+            gtt)
+                echo -e "  ${RED}✗${NC} AMD GPU memory (GTT) not configured (needed for large models on APUs)"
+                needs_grub=true
+                ;;
+        esac
+    done
+    echo ""
+
+    # Handle system-manager issues (groups + opengl-driver)
+    if $needs_system_manager; then
+        echo -e "The group and driver issues can be fixed with ${GREEN}system-manager${NC}."
+        echo "This creates the /run/opengl-driver symlink and adds you to the required groups."
+        echo ""
+        read -rp "Run system-manager now? [Y/n] " ans
+        if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
+            echo ""
+            echo "Running: sudo nix run 'github:numtide/system-manager' -- switch --flake '.'"
+            echo ""
+            sudo nix run 'github:numtide/system-manager' -- switch --flake '.'
+            echo ""
+            echo -e "${GREEN}system-manager applied successfully.${NC}"
+            needs_relogin=true
+        else
+            echo -e "${YELLOW}Skipped.${NC} You can run it manually later (see SETUP.md Step 8)."
+        fi
+        echo ""
+    fi
+
+    # Handle GRUB GTT configuration
+    if $needs_grub; then
+        configure_gtt
+        echo ""
+    fi
+
+    # If group changes were made, user needs to re-login
+    if $needs_relogin && $needs_system_manager; then
+        echo -e "${YELLOW}You need to logout and login again for group membership to take effect.${NC}"
+        echo "After re-login, run ./dev again."
+        exit 0
+    fi
+}
+
+configure_gtt() {
+    echo -e "${CYAN}── AMD GPU Memory Configuration ──${NC}"
+    echo ""
+    echo "AMD APUs (like Ryzen AI) share system RAM with the GPU."
+    echo "The kernel limits how much RAM the GPU can use (GTT size)."
+    echo "The default is too small for large LLM models."
+    echo ""
+
+    # Detect total system RAM in GB
+    local total_kb
+    total_kb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+    local total_gb=$(( total_kb / 1024 / 1024 ))
+
+    if [[ $total_gb -lt 1 ]]; then
+        echo -e "${RED}Could not detect system RAM.${NC}"
+        return
+    fi
+
+    echo "Detected system RAM: ${total_gb}GB"
+    echo ""
+    echo "How much RAM should the GPU be allowed to use?"
+    echo ""
+
+    local gb_100=$total_gb
+    local gb_80=$(( total_gb * 80 / 100 ))
+
+    echo -e "  ${GREEN}[1] ${gb_100}GB (100% — recommended for dedicated LLM machines)${NC}"
+    echo "  [2] ${gb_80}GB (80% — leaves headroom for other tasks)"
+    echo "  [3] Custom amount"
+    echo "  [s] Skip"
+    echo ""
+
+    read -rp "Select option [1]: " choice
+
+    local selected_gb
+    case "$choice" in
+        ""|1)
+            selected_gb=$gb_100
+            ;;
+        2)
+            selected_gb=$gb_80
+            ;;
+        3)
+            read -rp "Enter GB for GPU memory (1-${total_gb}): " custom_gb
+            if ! [[ "$custom_gb" =~ ^[0-9]+$ ]] || (( custom_gb < 1 || custom_gb > total_gb )); then
+                echo "Invalid amount."
+                return
+            fi
+            selected_gb=$custom_gb
+            ;;
+        s|S)
+            echo -e "${YELLOW}Skipped.${NC} You can configure this manually later (see SETUP.md Step 6)."
+            return
+            ;;
+        *)
+            echo "Invalid selection."
+            return
+            ;;
+    esac
+
+    local gttsize=$(( selected_gb * 1024 ))
+    local pages_limit=$(( selected_gb * 1024 * 256 ))
+
+    echo ""
+    echo "This will set the following kernel parameters in /etc/default/grub:"
+    echo "  amdgpu.gttsize=${gttsize}  (${selected_gb}GB GPU memory)"
+    echo "  ttm.pages_limit=${pages_limit}"
+    echo "  amd_iommu=off"
+    echo ""
+    echo -e "${YELLOW}Requires sudo and a reboot to take effect.${NC}"
+    echo ""
+    read -rp "Apply GRUB configuration? [Y/n] " ans
+
+    if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
+        local grub_file="/etc/default/grub"
+        local new_params="quiet splash amd_iommu=off amdgpu.gttsize=${gttsize} ttm.pages_limit=${pages_limit}"
+
+        if [[ ! -f "$grub_file" ]]; then
+            echo -e "${RED}$grub_file not found. Is GRUB installed?${NC}"
+            return
+        fi
+
+        # Replace or add GRUB_CMDLINE_LINUX_DEFAULT
+        if grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" "$grub_file"; then
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"${new_params}\"|" "$grub_file"
+        else
+            echo "GRUB_CMDLINE_LINUX_DEFAULT=\"${new_params}\"" | sudo tee -a "$grub_file" > /dev/null
+        fi
+
+        echo ""
+        sudo update-grub
+        echo ""
+        echo -e "${GREEN}GRUB configuration updated.${NC}"
+        echo -e "${YELLOW}A reboot is required for the GPU memory changes to take effect.${NC}"
+        echo ""
+        read -rp "Reboot now? [y/N] " reboot_ans
+        if [[ "$reboot_ans" == "y" || "$reboot_ans" == "Y" ]]; then
+            sudo reboot
+        else
+            echo "Remember to reboot before using GPU acceleration with large models."
+        fi
+    else
+        echo -e "${YELLOW}Skipped.${NC} You can configure this manually later (see SETUP.md Step 6)."
+    fi
+}
+
+# ── GPU detection ────────────────────────────────────────────────────────────
 
 detect_gpus() {
     # macOS: Metal only
@@ -118,12 +320,16 @@ prompt_user() {
     exec nix develop ".#$shell" "$@"
 }
 
+# ── Main ─────────────────────────────────────────────────────────────────────
+
 # Allow direct override: ./dev nvidia
 if [[ -n "$1" && "$1" != "-"* ]]; then
+    check_system
     echo "Starting $1 environment..."
     exec nix develop ".#$1"
 fi
 
+check_system
 detect_gpus
 show_menu
 prompt_user "$@"

@@ -28,6 +28,7 @@
 ### Prerequisites
 
 - [Nix](https://nixos.org/download.html) package manager
+- For Linux with GPU: one-time system setup required (see [Hardware Setup Guide](SETUP.md))
 - For llama.cpp: `llama-server` in PATH (installed via Nix flake)
 - For Foundry: `foundry` CLI and `foundry-local-sdk` (macOS/Windows only)
 
