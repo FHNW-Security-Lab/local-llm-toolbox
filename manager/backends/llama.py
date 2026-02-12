@@ -188,32 +188,49 @@ class LlamaBackend(BaseBackend):
     # ─────────────────────────────────────────────────────────────────
 
     def list_models(self) -> list[Model]:
-        """List all GGUF models in the models directory."""
+        """List all GGUF models in the models directory.
+
+        Split models (e.g. model-00001-of-00005.gguf) are grouped into
+        a single entry with combined size. The model ID uses the first
+        shard's filename, which is what llama-server expects.
+        """
+        import re
+
         models = []
         if not self.settings.models_dir.exists():
             logger.debug(f"LlamaBackend: Models directory does not exist: {self.settings.models_dir}")
             return models
 
-        for path in self.settings.models_dir.glob("*.gguf"):
-            # Parse model info from filename
-            name = path.stem
-            size = path.stat().st_size
+        # Group split shards by base name
+        shard_re = re.compile(r"^(.+)-(\d{5})-of-(\d{5})$")
+        grouped: dict[str, list[Path]] = {}
 
-            # Try to extract quantization from filename
+        for path in self.settings.models_dir.glob("*.gguf"):
+            m = shard_re.match(path.stem)
+            base = m.group(1) if m else path.stem
+            grouped.setdefault(base, []).append(path)
+
+        for base, paths in grouped.items():
+            paths.sort()
+            total_size = sum(p.stat().st_size for p in paths)
+            # ID = first shard filename (what llama-server expects via --model)
+            model_id = paths[0].stem
+            display_name = base
+
             quant = ""
             for q in ["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0", "F16", "F32"]:
-                if q.lower() in name.lower():
+                if q.lower() in base.lower():
                     quant = q
                     break
 
             models.append(Model(
-                id=name,
-                name=name,
-                size_bytes=size,
+                id=model_id,
+                name=display_name,
+                size_bytes=total_size,
                 format="gguf",
                 quantization=quant,
                 downloaded=True,
-                source=str(path),
+                source=str(paths[0]),
             ))
 
         logger.debug(f"LlamaBackend: Found {len(models)} models")
