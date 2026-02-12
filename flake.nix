@@ -79,19 +79,12 @@
       );
 
       # System-level configuration for non-NixOS Linux machines.
-      # Activates GPU driver visibility and group membership declaratively.
+      # Creates /run/opengl-driver symlink so Nix-built programs find GPU drivers.
       #
       # One-time activation:
       #   sudo nix run 'github:numtide/system-manager' -- switch --flake '.'
-      #
-      # Uses $SUDO_USER at evaluation time to set group membership
-      # (falls back to $USER if not running under sudo).
       systemConfigs = let
         linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
-        username = let
-          sudoUser = builtins.getEnv "SUDO_USER";
-          user = builtins.getEnv "USER";
-        in if sudoUser != "" then sudoUser else user;
       in nixpkgs.lib.genAttrs linuxSystems (system: {
         default = system-manager.lib.makeSystemConfig {
           modules = [
@@ -100,15 +93,7 @@
               config = {
                 nixpkgs.hostPlatform = system;
                 system-manager.allowAnyDistro = true;
-
-                # GPU driver visibility — creates /run/opengl-driver symlink
-                # pointing to Mesa drivers, same mechanism NixOS uses natively.
-                # Replaces the previous nixGL workaround.
                 system-graphics.enable = true;
-
-                # GPU device access — adds user to render and video groups
-                users.groups.render.members = [ username ];
-                users.groups.video.members = [ username ];
               };
             })
           ];

@@ -15,6 +15,22 @@ NC='\033[0m'
 detected_gpus=()
 recommended=""
 
+# ── Pre-flight checks ────────────────────────────────────────────────────────
+
+check_nix() {
+    if ! command -v nix &> /dev/null; then
+        echo -e "${RED}Nix is not installed.${NC} See https://nixos.org/download.html"
+        exit 1
+    fi
+
+    if ! nix eval --expr 'true' &> /dev/null; then
+        echo -e "${RED}Nix flakes are not enabled.${NC}"
+        echo "Add to ~/.config/nix/nix.conf:"
+        echo "  experimental-features = nix-command flakes"
+        exit 1
+    fi
+}
+
 # ── System checks (Linux only) ──────────────────────────────────────────────
 
 check_system() {
@@ -50,22 +66,21 @@ check_system() {
     echo "Some system settings need attention for GPU acceleration:"
     echo ""
 
-    local needs_system_manager=false
+    local missing_groups=()
+    local needs_opengl_driver=false
     local needs_grub=false
-    local has_group_issues=false
-    local ran_system_manager=false
+    local needs_relogin=false
 
     for issue in "${issues[@]}"; do
         case "$issue" in
             group:*)
                 local grp="${issue#group:}"
                 echo -e "  ${RED}✗${NC} User not in '${grp}' group (needed for GPU device access)"
-                needs_system_manager=true
-                has_group_issues=true
+                missing_groups+=("$grp")
                 ;;
             opengl-driver)
                 echo -e "  ${RED}✗${NC} /run/opengl-driver missing (needed for Nix programs to find GPU drivers)"
-                needs_system_manager=true
+                needs_opengl_driver=true
                 ;;
             gtt)
                 echo -e "  ${RED}✗${NC} AMD GPU memory (GTT) not configured (needed for large models on APUs)"
@@ -75,22 +90,37 @@ check_system() {
     done
     echo ""
 
-    # Handle system-manager issues (groups + opengl-driver)
-    if $needs_system_manager; then
-        echo -e "The group and driver issues can be fixed with ${GREEN}system-manager${NC}."
-        echo "This creates the /run/opengl-driver symlink and adds you to the required groups."
+    # Handle missing group membership
+    if [[ ${#missing_groups[@]} -gt 0 ]]; then
+        local groups_str="${missing_groups[*]}"
+        echo "Adding user to groups: ${groups_str}"
+        echo ""
+        read -rp "Run sudo usermod now? [Y/n] " ans
+        if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
+            for grp in "${missing_groups[@]}"; do
+                sudo usermod -aG "$grp" "$USER"
+            done
+            echo -e "${GREEN}Group membership updated.${NC}"
+            needs_relogin=true
+        else
+            echo -e "${YELLOW}Skipped.${NC} Run manually: sudo usermod -aG render,video \$USER"
+        fi
+        echo ""
+    fi
+
+    # Handle missing /run/opengl-driver
+    if $needs_opengl_driver; then
+        echo "Setting up GPU driver visibility via system-manager."
+        echo "This creates the /run/opengl-driver symlink so Nix programs find GPU drivers."
         echo ""
         read -rp "Run system-manager now? [Y/n] " ans
         if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
             local nix_bin
             nix_bin=$(command -v nix)
             echo ""
-            echo "Running: sudo $nix_bin --extra-experimental-features 'nix-command flakes' run 'github:numtide/system-manager' -- switch --flake '.'"
-            echo ""
             sudo "$nix_bin" --extra-experimental-features 'nix-command flakes' run 'github:numtide/system-manager' -- switch --flake '.'
             echo ""
-            echo -e "${GREEN}system-manager applied successfully.${NC}"
-            ran_system_manager=true
+            echo -e "${GREEN}GPU driver visibility configured.${NC}"
         else
             echo -e "${YELLOW}Skipped.${NC} You can run it manually later (see SETUP.md Step 8)."
         fi
@@ -103,8 +133,8 @@ check_system() {
         echo ""
     fi
 
-    # If group changes were applied, user needs to re-login
-    if $ran_system_manager && $has_group_issues; then
+    # If group changes were made, user needs to re-login
+    if $needs_relogin; then
         echo -e "${YELLOW}You need to logout and login again for group membership to take effect.${NC}"
         echo "After re-login, run ./dev again."
         exit 0
@@ -327,11 +357,13 @@ prompt_user() {
 
 # Allow direct override: ./dev nvidia
 if [[ -n "$1" && "$1" != "-"* ]]; then
+    check_nix
     check_system
     echo "Starting $1 environment..."
     exec nix develop ".#$1"
 fi
 
+check_nix
 check_system
 detect_gpus
 show_menu

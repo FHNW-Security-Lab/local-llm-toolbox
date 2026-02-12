@@ -60,17 +60,7 @@ Verify: `ls /dev/dri/` should show `card0` and `renderD128`.
 
 ### Step 5: GPU Access Permissions
 
-Handled automatically by system-manager in Step 7 (adds your user to `render` and `video` groups).
-
-<details>
-<summary>Manual fallback (if not using system-manager)</summary>
-
-<p>sudo usermod -aG render $USER</p>
-<p>sudo usermod -aG video $USER</p>
-
-</details>
-
-
+Handled automatically by `./dev` on first run (prompts to add your user to `render` and `video` groups).
 
 Symptoms if missing: `llama-server --list-devices` shows nothing, permission denied errors.
 
@@ -99,25 +89,19 @@ git clone https://github.com/FHNW-Security-Lab/local-llm-toolbox ~/local-llm-too
 cd ~/local-llm-toolbox
 ```
 
-### Step 8: System Configuration (one-time)
+### Step 8: Enter Toolbox
 
-This uses [system-manager](https://github.com/numtide/system-manager) to declaratively configure:
-- **GPU driver visibility** — creates `/run/opengl-driver` symlink so Nix-built programs find GPU drivers (via [nix-system-graphics](https://github.com/soupglasses/nix-system-graphics))
-- **GPU device access** — adds your user to the `render` and `video` groups
+The `./dev` script will check your system on first run and prompt you to fix any missing configuration:
+- **GPU group membership** — adds your user to `render` and `video` groups
+- **GPU driver visibility** — runs [system-manager](https://github.com/numtide/system-manager) to create the `/run/opengl-driver` symlink (via [nix-system-graphics](https://github.com/soupglasses/nix-system-graphics))
+- **AMD GPU memory** — configures GRUB kernel parameters for iGPU memory allocation
 
-```bash
-sudo nix --extra-experimental-features 'nix-command flakes' run 'github:numtide/system-manager' -- switch --flake '.'
-```
-
-**Logout and login again** (for group membership to take effect).
-
-### Step 9: Enter Toolbox and Verify
 ```bash
 cd ~/local-llm-toolbox
-nix develop
+./dev
 ```
 
-Verify GPU:
+Follow the prompts, then verify GPU:
 ```bash
 llama-server --list-devices
 vulkaninfo --summary 2>&1 | grep -A5 "GPU"
