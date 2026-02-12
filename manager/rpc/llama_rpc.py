@@ -6,6 +6,8 @@ This module provides:
 
 The control API allows the main node to reset workers before loading a new model,
 ensuring a clean state without orphaned GPU memory allocations.
+
+Inherits from BaseRpcWorkerServer which provides /health and /stats endpoints.
 """
 
 import asyncio
@@ -18,8 +20,10 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Query
+from fastapi import Query
 from pydantic import BaseModel
+
+from .base import BaseRpcWorkerServer, StatsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +38,6 @@ RPC_CACHE_DIR = Path.home() / ".cache" / "llama.cpp" / "rpc"
 # =============================================================================
 # API Models
 # =============================================================================
-
-
-class HealthResponse(BaseModel):
-    status: str = "ok"
 
 
 class StatusResponse(BaseModel):
@@ -57,13 +57,16 @@ class ResetResponse(BaseModel):
 # =============================================================================
 
 
-class RpcWorkerServer:
+class RpcWorkerServer(BaseRpcWorkerServer):
     """
     Runs on worker nodes via './toolbox rpc llama'.
 
     Manages:
     - rpc-server process (llama.cpp's TCP-based tensor offload server)
-    - Control API (HTTP endpoints for health, status, reset)
+    - Control API (HTTP endpoints for health, stats, status, reset)
+
+    Inherits /health and /stats from BaseRpcWorkerServer.
+    Adds llama-specific /status and /reset endpoints.
 
     Usage:
         server = RpcWorkerServer(rpc_port=50052, control_port=50053)
@@ -75,13 +78,12 @@ class RpcWorkerServer:
         rpc_port: int = DEFAULT_RPC_PORT,
         control_port: int = DEFAULT_CONTROL_PORT,
     ):
+        super().__init__(app_title="llama.cpp RPC Worker Control API")
         self.rpc_port = rpc_port
         self.control_port = control_port
         self._rpc_process: subprocess.Popen | None = None
         self._rpc_start_time: float | None = None
 
-        # Create FastAPI app for control API
-        self._app = FastAPI(title="llama.cpp RPC Worker Control API")
         self._setup_routes()
 
         logger.info(
@@ -89,12 +91,7 @@ class RpcWorkerServer:
         )
 
     def _setup_routes(self) -> None:
-        """Setup FastAPI routes for control API."""
-
-        @self._app.get("/health", response_model=HealthResponse)
-        async def health() -> HealthResponse:
-            """Health check endpoint."""
-            return HealthResponse(status="ok")
+        """Setup llama-specific FastAPI routes for control API."""
 
         @self._app.get("/status", response_model=StatusResponse)
         async def status() -> StatusResponse:
@@ -404,6 +401,46 @@ class RpcWorkerClient:
         except Exception as e:
             logger.warning(f"Failed to get status from {host}: {e}")
             return None
+
+    async def get_stats(self, host: str) -> StatsResponse | None:
+        """
+        Get system stats (memory, GPU) from a worker.
+
+        Args:
+            host: Worker hostname/IP
+
+        Returns:
+            StatsResponse if successful, None on error
+        """
+        url = f"http://{host}:{self.control_port}/stats"
+        logger.debug(f"Getting stats: {url}")
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    return StatsResponse(**data)
+                else:
+                    logger.warning(f"Stats request to {host} failed: {response.status_code}")
+                    return None
+        except Exception as e:
+            logger.debug(f"Failed to get stats from {host}: {e}")
+            return None
+
+    async def get_all_stats(self) -> dict[str, StatsResponse | None]:
+        """
+        Get system stats from all workers concurrently.
+
+        Returns:
+            Dict mapping hostname to StatsResponse (or None on failure)
+        """
+        async def fetch(host: str) -> tuple[str, StatsResponse | None]:
+            return host, await self.get_stats(host)
+
+        tasks = [fetch(host) for host in self.workers]
+        results = await asyncio.gather(*tasks)
+        return dict(results)
 
     async def reset_worker(self, host: str, force: bool = False) -> bool:
         """

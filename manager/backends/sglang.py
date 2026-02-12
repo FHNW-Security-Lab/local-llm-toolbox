@@ -66,9 +66,12 @@ class SglangBackend(BaseBackend):
         return False
 
     def get_cluster_nodes(self) -> list[Node]:
+        from ..base import collect_system_stats
+
         return [Node(
             id="local",
             hostname="localhost",
             role="local",
             status=NodeStatus.OFFLINE,
+            **collect_system_stats(),
         )]

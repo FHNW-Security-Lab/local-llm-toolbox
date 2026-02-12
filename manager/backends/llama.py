@@ -8,11 +8,10 @@ is handled by manager/bridge.py.
 import asyncio
 import logging
 import shutil
-import socket
 import subprocess
 import time
 
-from ..base import BaseBackend, has_metal
+from ..base import BaseBackend, collect_system_stats
 from ..config import LlamaSettings, get_llama_settings
 from ..interface import (
     BackendState,
@@ -146,6 +145,7 @@ class LlamaBackend(BaseBackend):
         """Get current backend state."""
         is_running = self._process_manager.is_running("llama-server")
         loaded_model_name = get_store().get_loaded_model(self.name)
+        is_active = get_store().state.active_backend == self.name
 
         if self._error:
             status = BackendStatus.ERROR
@@ -156,7 +156,7 @@ class LlamaBackend(BaseBackend):
         elif is_running and loaded_model_name:
             status = BackendStatus.RUNNING
             model_status = ModelStatus.READY
-        elif is_running:
+        elif is_active:
             status = BackendStatus.RUNNING
             model_status = ModelStatus.IDLE
         else:
@@ -174,7 +174,7 @@ class LlamaBackend(BaseBackend):
             model_status=model_status,
             loaded_model=loaded_model,
             model_error=self._error,
-            nodes=self.get_cluster_nodes(server_running=is_running),
+            nodes=self.get_cluster_nodes(backend_active=is_active, server_running=is_running),
         )
 
     def is_healthy(self, timeout: float = 2.0) -> bool:
@@ -493,10 +493,11 @@ class LlamaBackend(BaseBackend):
     def supports_cluster(self) -> bool:
         return True
 
-    def get_cluster_nodes(self, server_running: bool | None = None) -> list[Node]:
+    def get_cluster_nodes(self, backend_active: bool = False, server_running: bool | None = None) -> list[Node]:
         """Get all nodes in the cluster with stats.
 
         Args:
+            backend_active: Whether this backend is the active backend (set by get_state).
             server_running: If known, whether the server is running (avoids network check).
                            If None, checks process manager (fast local check).
         """
@@ -506,109 +507,70 @@ class LlamaBackend(BaseBackend):
         if server_running is None:
             server_running = self._process_manager.is_running("llama-server")
 
-        local_status = NodeStatus.ONLINE if server_running else NodeStatus.OFFLINE
+        # Main node is "online" if the backend is active OR the server is running
+        local_status = NodeStatus.ONLINE if (backend_active or server_running) else NodeStatus.OFFLINE
         nodes.append(Node(
             id="local",
             hostname="localhost",
             role="main",
             status=local_status,
-            **self._collect_local_stats(),
+            **collect_system_stats(),
         ))
 
         # Add RPC worker nodes if configured
-        for i, worker_host in enumerate(self.settings.rpc_worker_list):
-            worker_status = self._check_worker_status(worker_host)
-            nodes.append(Node(
-                id=f"worker-{i}",
-                hostname=worker_host,
-                role="worker",
-                status=worker_status,
-                # We don't collect detailed stats from workers to keep it fast
-                # The control API could be extended to return stats if needed
-                gpu_name="",
-                gpu_memory_used=0,
-                gpu_memory_total=0,
-                memory_used=0,
-                memory_total=0,
-            ))
+        if self.settings.rpc_worker_list:
+            worker_stats = self._fetch_worker_stats()
+            for i, worker_host in enumerate(self.settings.rpc_worker_list):
+                stats = worker_stats.get(worker_host)
+                if stats:
+                    nodes.append(Node(
+                        id=f"worker-{i}",
+                        hostname=worker_host,
+                        role="worker",
+                        status=NodeStatus.ONLINE,
+                        **stats,
+                    ))
+                else:
+                    nodes.append(Node(
+                        id=f"worker-{i}",
+                        hostname=worker_host,
+                        role="worker",
+                        status=NodeStatus.OFFLINE,
+                    ))
 
         return nodes
 
-    def _check_worker_status(self, host: str) -> NodeStatus:
-        """Check if a worker's control API is reachable."""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex((host, self.settings.rpc_control_port))
-            sock.close()
-            if result == 0:
-                return NodeStatus.ONLINE
-            return NodeStatus.OFFLINE
-        except Exception:
-            return NodeStatus.OFFLINE
+    def _fetch_worker_stats(self) -> dict[str, dict]:
+        """Fetch stats from all RPC workers concurrently via their /stats endpoint.
 
-    def _collect_local_stats(self) -> dict:
-        """Collect memory/GPU stats from local machine."""
-        import platform
+        Returns:
+            Dict mapping hostname to stats dict, or empty dict for unreachable workers.
+        """
+        workers = self.settings.rpc_worker_list
+        if not workers:
+            return {}
 
-        stats = {
-            "gpu_name": "Metal" if has_metal() else "CPU",
-            "gpu_memory_used": 0,
-            "gpu_memory_total": 0,
-            "memory_used": 0,
-            "memory_total": 0,
-        }
+        if self._rpc_client is None:
+            self._rpc_client = RpcWorkerClient(
+                workers=workers,
+                control_port=self.settings.rpc_control_port,
+            )
 
         try:
-            if platform.system() == "Darwin":
-                # macOS: total memory
-                result = subprocess.run(
-                    ["sysctl", "-n", "hw.memsize"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    stats["memory_total"] = int(result.stdout.strip())
-                    # Don't set gpu_memory on macOS - unified memory makes it meaningless
-
-                # Memory usage via vm_stat
-                result = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    page_size = 16384
-                    pages = {"active": 0, "wired": 0, "compressed": 0}
-                    for line in result.stdout.split("\n"):
-                        if "page size of" in line:
-                            page_size = int(line.split()[-2])
-                        for key in pages:
-                            if f"Pages {key}" in line or f"Pages {key} down" in line:
-                                pages[key] = int(line.split(":")[1].strip().rstrip("."))
-                    stats["memory_used"] = sum(pages.values()) * page_size
-
-            elif platform.system() == "Linux":
-                with open("/proc/meminfo") as f:
-                    for line in f:
-                        if line.startswith("MemTotal:"):
-                            stats["memory_total"] = int(line.split()[1]) * 1024
-                        elif line.startswith("MemAvailable:"):
-                            stats["memory_used"] = stats["memory_total"] - int(line.split()[1]) * 1024
-                            break
-
-                # NVIDIA GPU
-                if shutil.which("nvidia-smi"):
-                    result = subprocess.run(
-                        ["nvidia-smi", "--query-gpu=name,memory.used,memory.total",
-                         "--format=csv,noheader,nounits"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        parts = result.stdout.strip().split(",")
-                        if len(parts) >= 3:
-                            stats["gpu_name"] = parts[0].strip()
-                            stats["gpu_memory_used"] = int(parts[1].strip()) * 1024 * 1024
-                            stats["gpu_memory_total"] = int(parts[2].strip()) * 1024 * 1024
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                all_stats = loop.run_until_complete(self._rpc_client.get_all_stats())
+                result = {}
+                for host, stats_response in all_stats.items():
+                    if stats_response:
+                        result[host] = stats_response.model_dump()
+                return result
+            finally:
+                loop.close()
         except Exception as e:
-            logger.debug(f"LlamaBackend: Failed to collect local stats: {e}")
-
-        return stats
+            logger.debug(f"LlamaBackend: Failed to fetch worker stats: {e}")
+            return {}
 
     def configure_cluster(self, config: ClusterConfig) -> tuple[bool, str]:
         """Configure cluster nodes.

@@ -113,6 +113,9 @@ check_system() {
         echo "Setting up GPU driver visibility via system-manager."
         echo "This creates the /run/opengl-driver symlink so Nix programs find GPU drivers."
         echo ""
+        echo "Note: Nix may ask to trust numtide's binary cache — answer 'y' for pre-built"
+        echo "binaries, or 'n' to build from source."
+        echo ""
         read -rp "Run system-manager now? [Y/n] " ans
         if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
             local nix_bin

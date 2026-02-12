@@ -52,6 +52,7 @@ class Node:
     role: str = "local"  # "local", "remote"
     status: NodeStatus = NodeStatus.OFFLINE
     gpu_name: str = ""
+    gpu_busy_percent: int = 0
     gpu_memory_used: int = 0  # bytes
     gpu_memory_total: int = 0  # bytes
     cpu_percent: float = 0.0

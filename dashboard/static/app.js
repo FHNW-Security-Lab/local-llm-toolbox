@@ -193,9 +193,15 @@ function renderNodes() {
             : '<span class="status-badge offline">offline</span>';
 
         const memPct = node.memory_total ? Math.round(node.memory_used / node.memory_total * 100) : 0;
-        const gpuPct = node.gpu_memory_total ? Math.round(node.gpu_memory_used / node.gpu_memory_total * 100) : 0;
+        const gpuMemPct = node.gpu_memory_total ? Math.round(node.gpu_memory_used / node.gpu_memory_total * 100) : 0;
+        const gpuBusyPct = node.gpu_busy_percent || 0;
+        const cpuPct = Math.round(node.cpu_percent || 0);
         const memClass = memPct > 90 ? 'high' : memPct > 70 ? 'medium' : '';
-        const gpuClass = gpuPct > 90 ? 'high' : gpuPct > 70 ? 'medium' : '';
+        const gpuMemClass = gpuMemPct > 90 ? 'high' : gpuMemPct > 70 ? 'medium' : '';
+        const gpuBusyClass = gpuBusyPct > 90 ? 'high' : gpuBusyPct > 70 ? 'medium' : '';
+        const cpuClass = cpuPct > 90 ? 'high' : cpuPct > 70 ? 'medium' : '';
+
+        const hasGpu = node.gpu_name && node.gpu_name !== 'CPU';
 
         return `
             <div class="card ${isOnline ? 'active' : ''}">
@@ -205,20 +211,32 @@ function renderNodes() {
                         <div class="subtitle">${node.role} · ${node.gpu_name || 'CPU'}</div>
                     </div>
                 </div>
-                ${isOnline && node.memory_total ? `
+                ${node.memory_total ? `
                 <div class="node-stats">
                     <div class="stat-item">
                         <span class="stat-label">Mem</span>
                         <span class="stat-value">${formatSize(node.memory_used)} / ${formatSize(node.memory_total)}</span>
                         <div class="progress-bar"><div class="progress-fill ${memClass}" style="width: ${memPct}%"></div></div>
                     </div>
-                    ${node.gpu_memory_total ? `
+                    ${hasGpu && node.gpu_memory_total ? `
                     <div class="stat-item">
-                        <span class="stat-label">GPU</span>
+                        <span class="stat-label">GPU Mem</span>
                         <span class="stat-value">${formatSize(node.gpu_memory_used)} / ${formatSize(node.gpu_memory_total)}</span>
-                        <div class="progress-bar"><div class="progress-fill ${gpuClass}" style="width: ${gpuPct}%"></div></div>
+                        <div class="progress-bar"><div class="progress-fill ${gpuMemClass}" style="width: ${gpuMemPct}%"></div></div>
                     </div>
                     ` : ''}
+                    ${hasGpu && node.gpu_name !== 'Metal' ? `
+                    <div class="stat-item">
+                        <span class="stat-label">GPU</span>
+                        <span class="stat-value">${gpuBusyPct}%</span>
+                        <div class="progress-bar"><div class="progress-fill ${gpuBusyClass}" style="width: ${gpuBusyPct}%"></div></div>
+                    </div>
+                    ` : ''}
+                    <div class="stat-item">
+                        <span class="stat-label">CPU</span>
+                        <span class="stat-value">${cpuPct}%</span>
+                        <div class="progress-bar"><div class="progress-fill ${cpuClass}" style="width: ${cpuPct}%"></div></div>
+                    </div>
                 </div>
                 ` : ''}
             </div>

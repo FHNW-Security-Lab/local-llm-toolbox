@@ -388,11 +388,13 @@ class FoundryBackend(BaseBackend):
         Args:
             service_running: If known, whether service is running (avoids SDK call).
         """
-        # Use provided value or leave as None (will show as offline if unknown)
+        from ..base import collect_system_stats
+
         status = NodeStatus.ONLINE if service_running else NodeStatus.OFFLINE
         return [Node(
             id="local",
             hostname="localhost",
             role="local",
             status=status,
+            **collect_system_stats(),
         )]
