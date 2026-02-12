@@ -557,17 +557,14 @@ class LlamaBackend(BaseBackend):
             )
 
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                all_stats = loop.run_until_complete(self._rpc_client.get_all_stats())
-                result = {}
-                for host, stats_response in all_stats.items():
-                    if stats_response:
-                        result[host] = stats_response.model_dump()
-                return result
-            finally:
-                loop.close()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                all_stats = pool.submit(asyncio.run, self._rpc_client.get_all_stats()).result(timeout=10)
+            result = {}
+            for host, stats_response in all_stats.items():
+                if stats_response:
+                    result[host] = stats_response.model_dump()
+            return result
         except Exception as e:
             logger.debug(f"LlamaBackend: Failed to fetch worker stats: {e}")
             return {}
