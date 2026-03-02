@@ -336,6 +336,10 @@ class LlamaBackend(BaseBackend):
                 cmd.extend(["--rpc", self._rpc_addresses])
                 logger.info(f"LlamaBackend: Using RPC workers: {self._rpc_addresses}")
 
+                if self.settings.tensor_split.strip():
+                    cmd.extend(["--tensor-split", self.settings.tensor_split.strip()])
+                    logger.info(f"LlamaBackend: Tensor split: {self.settings.tensor_split.strip()}")
+
             logger.debug(f"LlamaBackend: Starting llama-server: {' '.join(cmd)}")
 
             # Start llama-server

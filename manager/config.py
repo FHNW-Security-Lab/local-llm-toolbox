@@ -41,6 +41,14 @@ class LlamaSettings(BaseSettings):
         default=50053,
         description="Control API port on workers (same for all workers)",
     )
+    tensor_split: str = Field(
+        default="",
+        description=(
+            "Comma-separated proportions for splitting model across nodes. "
+            "First value = main node, then each RPC worker in LLAMA_RPC_WORKERS order. "
+            "Example: '0.5,0.5' splits evenly between main node and one worker."
+        ),
+    )
 
     # Timeouts (in seconds)
     # Large models (70B+) can take 2-3+ hours to download on slower connections
