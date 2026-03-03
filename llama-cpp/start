@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+#
+# Start llama-server or llama-rpc-server using config.toml
+#
+set -e
+cd "$(dirname "$0")"
+
+CONFIG="config.toml"
+
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# ── TOML parser ──────────────────────────────────────────────────────
+
+get() {
+    # Usage: get <section> <key> → prints value (without quotes), or empty string
+    local section="$1" key="$2"
+    local in_section=false
+
+    while IFS= read -r line; do
+        # Strip leading/trailing whitespace
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+
+        # Skip comments and empty lines
+        [[ -z "$line" || "$line" == \#* ]] && continue
+
+        # Section headers
+        if [[ "$line" =~ ^\[([a-zA-Z_]+)\]$ ]]; then
+            [[ "${BASH_REMATCH[1]}" == "$section" ]] && in_section=true || in_section=false
+            continue
+        fi
+
+        # Key = value (only in our section)
+        if $in_section && [[ "$line" =~ ^${key}[[:space:]]*=[[:space:]]*(.+)$ ]]; then
+            local val="${BASH_REMATCH[1]}"
+            # Strip surrounding quotes
+            val="${val%\"}" ; val="${val#\"}"
+            echo "$val"
+            return
+        fi
+    done < "$CONFIG"
+}
+
+# ── Build commands ───────────────────────────────────────────────────
+
+build_server_cmd() {
+    local cmd=("llama-server")
+    local val
+
+    val=$(get server models_dir)  ; [[ -n "$val" ]] && cmd+=(--models-dir "${val/#\~/$HOME}")
+    val=$(get server models_max)  ; [[ -n "$val" ]] && cmd+=(--models-max "$val")
+    val=$(get server port)        ; [[ -n "$val" ]] && cmd+=(--port "$val")
+    val=$(get server gpu_layers)  ; [[ -n "$val" ]] && cmd+=(-ngl "$val")
+    val=$(get server context_size); [[ -n "$val" ]] && cmd+=(-c "$val")
+    val=$(get server cache_type_k); [[ -n "$val" ]] && cmd+=(-ctk "$val")
+    val=$(get server cache_type_v); [[ -n "$val" ]] && cmd+=(-ctv "$val")
+    val=$(get server host)        ; [[ -n "$val" ]] && cmd+=(--host "$val")
+    val=$(get server rpc_workers) ; [[ -n "$val" ]] && cmd+=(--rpc "$val")
+    val=$(get server tensor_split); [[ -n "$val" ]] && cmd+=(--tensor-split "$val")
+
+    # Boolean flags
+    [[ "$(get server no_mmap)"    == "true" ]] && cmd+=(--no-mmap)
+    [[ "$(get server direct_io)"  == "true" ]] && cmd+=(--direct-io)
+    [[ "$(get server jinja)"      == "true" ]] && cmd+=(--jinja)
+    [[ "$(get server flash_attn)" == "true" ]] && cmd+=(-fa)
+
+    echo "${cmd[@]}"
+}
+
+build_rpc_cmd() {
+    local cmd=("llama-rpc-server")
+    local val
+
+    val=$(get rpc host) ; [[ -n "$val" ]] && cmd+=(--host "$val")
+    val=$(get rpc port) ; [[ -n "$val" ]] && cmd+=(--port "$val")
+
+    echo "${cmd[@]}"
+}
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+if [[ ! -f "$CONFIG" ]]; then
+    echo -e "${RED}Config not found: $CONFIG${NC}"
+    echo "Copy config.toml.example to config.toml and adjust."
+    exit 1
+fi
+
+# Allow direct mode selection: ./start server | ./start rpc
+mode="$1"
+
+if [[ -z "$mode" ]]; then
+    echo ""
+    echo -e "${CYAN}=== llama.cpp ===${NC}"
+    echo ""
+    echo "  [1] Server  (llama-server with router mode + web UI)"
+    echo "  [2] RPC Worker  (expose GPU for distributed inference)"
+    echo "  [q] Quit"
+    echo ""
+    read -rp "Select [1]: " choice
+
+    case "$choice" in
+        ""|1) mode="server" ;;
+        2)    mode="rpc" ;;
+        q|Q)  exit 0 ;;
+        *)    echo "Invalid selection." ; exit 1 ;;
+    esac
+fi
+
+case "$mode" in
+    server)
+        cmd=$(build_server_cmd)
+        echo ""
+        echo -e "${GREEN}$cmd${NC}"
+        echo ""
+        exec $cmd
+        ;;
+    rpc)
+        cmd=$(build_rpc_cmd)
+        echo ""
+        echo -e "${GREEN}$cmd${NC}"
+        echo ""
+        exec $cmd
+        ;;
+    *)
+        echo "Usage: ./start [server|rpc]"
+        exit 1
+        ;;
+esac

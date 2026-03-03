@@ -1,0 +1,86 @@
+# ═══════════════════════════════════════════════════════════════════════
+# llama.cpp Configuration
+# ═══════════════════════════════════════════════════════════════════════
+# Uncomment parameters to enable them. Run ./start to launch.
+
+
+[server]
+
+# Directory containing GGUF model files.
+# Scanned on startup — all models become available via the API and web UI.
+models_dir = "~/.local/share/models"
+
+# Max models loaded at once (router mode). LRU eviction when limit reached.
+# Set to 1 to save memory if you only use one model at a time.
+models_max = 1
+
+# Server port. Web UI and OpenAI-compatible API both served here.
+port = 8090
+
+# GPU layers to offload: "all", or a number (e.g. 40).
+# More layers on GPU = faster, but uses more VRAM.
+gpu_layers = "all"
+
+# Context window size (tokens).
+#
+# ┌──────────────┬──────────────────────────────────────────────┐
+# │ Context size  │ KV cache VRAM (per model)                    │
+# ├──────────────┼──────────────┬──────────────┬───────────────┤
+# │              │ fp16 (default)│ q8_0 (~half) │ q4_0 (~quarter)│
+# ├──────────────┼──────────────┼──────────────┼───────────────┤
+# │     2,048    │    ~0.5 GB   │    ~0.25 GB  │    ~0.13 GB   │
+# │     8,192    │    ~2 GB     │    ~1 GB     │    ~0.5 GB    │
+# │    16,384    │    ~4 GB     │    ~2 GB     │    ~1 GB      │
+# │    32,768    │    ~8 GB     │    ~4 GB     │    ~2 GB      │
+# │    65,536    │   ~16 GB     │    ~8 GB     │    ~4 GB      │
+# │   131,072    │   ~32 GB     │   ~16 GB     │    ~8 GB      │
+# └──────────────┴──────────────┴──────────────┴───────────────┘
+# These are rough estimates for a ~70B model. Actual usage varies by
+# model architecture (head count, embedding dim). Smaller models use less.
+context_size = 16384
+
+# KV cache quantization — trade quality for memory.
+# Options: f16 (default, best quality), q8_0, q4_0 (most compact)
+# q4_0 works well in practice with minimal quality loss.
+cache_type_k = "q4_0"
+cache_type_v = "q4_0"
+
+# Disable memory-mapped I/O. Required when using RPC workers.
+# Also helps when the model exceeds a single machine's RAM.
+no_mmap = true
+
+# Direct I/O — bypass kernel page cache when loading models.
+# Prevents large model files from evicting useful data from the OS cache.
+direct_io = true
+
+# Jinja template engine for chat templates.
+# Needed by models that ship Jinja-based prompt formats (most modern ones).
+jinja = true
+
+# Flash Attention — faster attention on supported GPUs.
+# Auto-enabled with ROCm. Uncomment for CUDA/Vulkan if your GPU supports it.
+# flash_attn = true
+
+# Bind address. Default is localhost only. Set to 0.0.0.0 for network access.
+# host = "0.0.0.0"
+
+
+# ── Distributed inference (RPC) ─────────────────────────────────────
+
+# Connect to RPC workers running on other machines.
+# Workers must be started first (./start → RPC Worker).
+# Comma-separated host:port list.
+# rpc_workers = "192.168.200.2:50053"
+# rpc_workers = "192.168.200.2:50053,192.168.200.3:50053"
+
+# How to split model layers across nodes. Leave commented to auto-split
+# (proportional to each node's available memory, usually what you want).
+# tensor_split = "50,50"
+
+
+[rpc]
+
+# RPC worker settings (when this machine acts as a worker).
+# The main node connects here to offload tensor computation.
+host = "0.0.0.0"
+port = 50053

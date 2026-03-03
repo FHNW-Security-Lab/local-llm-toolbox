@@ -125,7 +125,8 @@ check_system() {
             echo ""
             echo -e "${GREEN}GPU driver visibility configured.${NC}"
         else
-            echo -e "${YELLOW}Skipped.${NC} You can run it manually later (see SETUP.md Step 8)."
+            echo -e "${YELLOW}Skipped.${NC} Run manually:"
+            echo "  sudo nix run 'github:numtide/system-manager' -- switch --flake '.'"
         fi
         echo ""
     fi
@@ -195,7 +196,7 @@ configure_gtt() {
             selected_gb=$custom_gb
             ;;
         s|S)
-            echo -e "${YELLOW}Skipped.${NC} You can configure this manually later (see SETUP.md Step 6)."
+            echo -e "${YELLOW}Skipped.${NC}"
             return
             ;;
         *)
@@ -246,7 +247,7 @@ configure_gtt() {
             echo "Remember to reboot before using GPU acceleration with large models."
         fi
     else
-        echo -e "${YELLOW}Skipped.${NC} You can configure this manually later (see SETUP.md Step 6)."
+        echo -e "${YELLOW}Skipped.${NC}"
     fi
 }
 
@@ -273,8 +274,9 @@ detect_gpus() {
 
         # AMD GPU (integrated or discrete)
         if echo "$pci_output" | grep -qiE "amd.*(radeon|graphics)|ati.*radeon"; then
+            detected_gpus+=("rocm:ROCm (AMD)")
             detected_gpus+=("vulkan:Vulkan (AMD)")
-            [[ -z "$recommended" ]] && recommended="vulkan"
+            [[ -z "$recommended" ]] && recommended="rocm"
         fi
 
         # Intel integrated graphics
@@ -293,7 +295,7 @@ detect_gpus() {
 
 show_menu() {
     echo ""
-    echo -e "${CYAN}=== Local LLM Toolbox - Environment Setup ===${NC}"
+    echo -e "${CYAN}=== llama-router - Environment Setup ===${NC}"
     echo ""
     echo "Detected hardware:"
 
@@ -328,7 +330,7 @@ prompt_user() {
         ((i++))
     done
 
-    read -rp "Select option or press Enter load the recommended environment: " choice
+    read -rp "Select option or press Enter for recommended: " choice
 
     # Y/y/Enter all accept the recommended option
     if [[ -z "$choice" || "$choice" == "y" || "$choice" == "Y" ]]; then
