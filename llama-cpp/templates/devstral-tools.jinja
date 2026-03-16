@@ -1,0 +1,139 @@
+{#- ============================================================= #}
+{#- Devstral-Small-2 Chat Template with Tool Calling             #}
+{#- Target: Devstral-Small-2-24B-Instruct-2512                  #}
+{#- Source: github.com/wonderfuldestruction/devstral-small-2-template-fix #}
+{#-         + Unsloth fixes (role alternation, date handling)    #}
+{#- ============================================================= #}
+
+{#- Begin of sequence token. #}
+{{- bos_token }}
+
+{#- Handle system prompt if it exists. #}
+{%- if messages[0]['role'] == 'system' %}
+    {{- '[SYSTEM_PROMPT]' -}}
+    {%- if messages[0]['content'] is string %}
+        {{- messages[0]['content'] -}}
+    {%- else %}
+        {%- for block in messages[0]['content'] %}
+            {%- if block['type'] == 'text' %}
+                {{- block['text'] }}
+            {%- else %}
+                {{- raise_exception('Only text chunks are supported in system message contents.') }}
+            {%- endif %}
+        {%- endfor %}
+    {%- endif %}
+    {{- '[/SYSTEM_PROMPT]' -}}
+    {%- set loop_messages = messages[1:] %}
+{%- else %}
+    {%- set loop_messages = messages %}
+    {{- '[SYSTEM_PROMPT]You are Devstral, a Large Language Model created by Mistral AI. You power an AI assistant. Your knowledge base was last updated on 2023-10-01. When you are not sure about some information or when the user request requires up-to-date or specific data, you must use the available tools to fetch the information. Do not hesitate to use tools whenever they can provide a more accurate or complete response. If no relevant tools are available, then clearly state that you do not have the information and avoid making up anything.[/SYSTEM_PROMPT]' }}
+{%- endif %}
+
+{#- Tools definition #}
+{%- set has_tools = false %}
+{%- if tools is defined and tools is not none and tools|length > 0 %}
+    {%- set has_tools = true %}
+    {{- '[AVAILABLE_TOOLS]' + (tools | tojson) + '[/AVAILABLE_TOOLS]' }}
+{%- endif %}
+
+{#- Handle conversation messages. #}
+{%- for message in loop_messages %}
+
+    {#- Developer messages #}
+    {%- if message['role'] == 'developer' %}
+        {{- '[DEVELOPER_PROMPT]' + message['content'] + '[/DEVELOPER_PROMPT]' }}
+
+    {#- User messages #}
+    {%- elif message['role'] == 'user' %}
+        {%- if message['content'] is string %}
+            {{- '[INST]' + message['content'] + '[/INST]' }}
+        {%- elif message['content'] | length > 0 %}
+            {{- '[INST]' }}
+            {%- if message['content'] | length == 2 %}
+                {%- set blocks = message['content'] | sort(attribute='type') %}
+            {%- else %}
+                {%- set blocks = message['content'] %}
+            {%- endif %}
+            {%- for block in blocks %}
+                {%- if block['type'] == 'text' %}
+                    {{- block['text'] }}
+                {%- elif block['type'] in ['image', 'image_url'] %}
+                    {{- '[IMG]' }}
+                {%- else %}
+                    {{- raise_exception('Only text, image and image_url chunks are supported in user message content.') }}
+                {%- endif %}
+            {%- endfor %}
+            {{- '[/INST]' }}
+        {%- else %}
+            {{- raise_exception('User message must have a string or a list of chunks in content') }}
+        {%- endif %}
+
+    {#- Assistant messages #}
+    {%- elif message['role'] == 'assistant' %}
+        {%- if (message['content'] is none or message['content'] == '' or message['content']|length == 0) and (message['tool_calls'] is not defined or message['tool_calls'] is none or message['tool_calls']|length == 0) %}
+            {{- raise_exception('Assistant message must have content or tool calls.') }}
+        {%- endif %}
+
+        {%- if message['content'] is string %}
+            {{- message['content'] }}
+        {%- elif message['content'] is iterable and message['content'] | length > 0 %}
+            {%- for block in message['content'] %}
+                {%- if block['type'] == 'text' %}
+                    {{- block['text'] }}
+                {%- else %}
+                    {{- raise_exception('Only text chunks are supported in assistant message contents.') }}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+
+        {%- if message['tool_calls'] is defined and message['tool_calls'] is not none and message['tool_calls']|length > 0 %}
+            {{- '[TOOL_CALLS][' }}
+            {%- for tool in message['tool_calls'] %}
+                {%- set out = tool['function']|tojson %}
+                {%- set tool_id = '000000001' %}
+                {%- if tool['id'] is defined and tool['id'] is not none %}
+                    {%- set tool_id = tool['id']|string %}
+                {%- endif %}
+                {%- if tool_id|length > 9 %}
+                    {%- set tool_id = tool_id[-9:] %}
+                {%- endif %}
+                {%- if tool_id|length < 9 %}
+                    {%- set tool_id = ('000000000' + tool_id)[-9:] %}
+                {%- endif %}
+                {{- out[:-1] }}
+                {{- ', "id": "' + tool_id + '"}' }}
+                {%- if not loop.last %}
+                    {{- ', ' }}
+                {%- else %}
+                    {{- ']' }}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+
+        {{- eos_token }}
+
+    {#- Tool messages #}
+    {%- elif message['role'] == 'tool' or message['role'] == 'tool_results' %}
+        {%- if message.content is defined and message.content.content is defined %}
+            {%- set content = message.content.content %}
+        {%- else %}
+            {%- set content = message.content %}
+        {%- endif %}
+        {%- set call_id = '000000001' %}
+        {%- if message.tool_call_id is defined and message.tool_call_id is not none %}
+            {%- set call_id = message.tool_call_id|string %}
+        {%- elif message.call_id is defined and message.call_id is not none %}
+            {%- set call_id = message.call_id|string %}
+        {%- endif %}
+        {%- if call_id|length > 9 %}
+            {%- set call_id = call_id[-9:] %}
+        {%- endif %}
+        {%- if call_id|length < 9 %}
+            {%- set call_id = ('000000000' + call_id)[-9:] %}
+        {%- endif %}
+        {{- '[TOOL_RESULTS] {"content": ' + (content|tojson) + ', "call_id": "' + call_id + '"}[/TOOL_RESULTS]' }}
+
+    {%- else %}
+        {{- raise_exception('Only user, assistant, tool, system, and developer roles are supported, got ' + message['role'] + '.') }}
+    {%- endif %}
+{%- endfor %}

@@ -59,8 +59,10 @@ build_server_cmd() {
     val=$(get server cache_type_k); [[ -n "$val" ]] && cmd+=(-ctk "$val")
     val=$(get server cache_type_v); [[ -n "$val" ]] && cmd+=(-ctv "$val")
     val=$(get server host)        ; [[ -n "$val" ]] && cmd+=(--host "$val")
+    val=$(get server api_key)     ; [[ -n "$val" ]] && cmd+=(--api-key "$val")
     val=$(get server rpc_workers) ; [[ -n "$val" ]] && cmd+=(--rpc "$val")
     val=$(get server tensor_split); [[ -n "$val" ]] && cmd+=(--tensor-split "$val")
+    val=$(get server model_preset) ; [[ -n "$val" ]] && cmd+=(--model-preset "${val/#\~/$HOME}")
 
     # Boolean flags
     [[ "$(get server no_mmap)"    == "true" ]] && cmd+=(--no-mmap)

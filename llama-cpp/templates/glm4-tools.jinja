@@ -1,0 +1,125 @@
+{#- ============================================================= #}
+{#- GLM-4 Chat Template with Tool Calling Support                #}
+{#- Target: GLM-4.5, GLM-4.6, GLM-4.7 (all variants)           #}
+{#- Source: huggingface.co/unsloth/GLM-4.5-Air-GGUF/discussions/9 #}
+{#- ============================================================= #}
+
+[gMASK]<sop>
+{%- if tools -%}
+<|system|>
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{% for tool in tools %}
+{{ tool | tojson }}
+{% endfor %}
+</tools>
+
+For each function call, output the function name and arguments within the following XML format:
+<tool_call>{function-name}
+<arg_key>{arg-key-1}</arg_key>
+<arg_value>{arg-value-1}</arg_value>
+<arg_key>{arg-key-2}</arg_key>
+<arg_value>{arg-value-2}</arg_value>
+...
+</tool_call>{%- endif -%}
+{%- macro visible_text(content) -%}
+    {%- if content is string -%}
+        {{- content }}
+    {%- elif content is iterable and content is not mapping -%}
+        {%- for item in content -%}
+            {%- if item is mapping and item.type == 'text' -%}
+                {{- item.text }}
+            {%- elif item is string -%}
+                {{- item }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{- content }}
+    {%- endif -%}
+{%- endmacro -%}
+{%- set ns = namespace(last_user_index=-1) %}
+{%- for m in messages %}
+    {%- if m.role == 'user' %}
+        {%- set user_content = visible_text(m.content) -%}
+        {%- if not ("tool_response" in user_content) %}
+            {% set ns.last_user_index = loop.index0 -%}
+        {%- endif -%}
+    {%- endif %}
+{%- endfor %}
+{% for m in messages %}
+{%- if m.role == 'user' -%}<|user|>
+{%- set user_content = visible_text(m.content) -%}
+{{ user_content }}
+{%- if enable_thinking is defined and not enable_thinking -%}
+{%- if not user_content.endswith("/nothink") -%}
+{{- '/nothink' -}}
+{%- endif -%}
+{%- endif -%}
+{%- elif m.role == 'assistant' -%}
+<|assistant|>
+{%- set reasoning_content = '' %}
+{%- set content = visible_text(m.content) %}
+{%- if m.reasoning_content is string %}
+    {%- set reasoning_content = m.reasoning_content %}
+{%- else %}
+    {%- if '</think>' in content %}
+        {%- set think_parts = content.split('</think>') %}
+        {%- if think_parts|length > 1 %}
+            {%- set before_end_think = think_parts[0] %}
+            {%- set after_end_think = think_parts[1] %}
+            {%- set think_start_parts = before_end_think.split('<think>') %}
+            {%- if think_start_parts|length > 1 %}
+                {%- set reasoning_content = think_start_parts[-1].lstrip('\n') %}
+            {%- endif %}
+            {%- set content = after_end_think.lstrip('\n') %}
+        {%- endif %}
+    {%- endif %}
+{%- endif %}
+{%- if loop.index0 > ns.last_user_index and reasoning_content -%}
+{{ '\n<think>' + reasoning_content.strip() +  '</think>'}}
+{%- else -%}
+{{ '\n<think></think>' }}
+{%- endif -%}
+{%- if content.strip() -%}
+{{ '\n' + content.strip() }}
+{%- endif -%}
+{% if m.tool_calls %}
+{% for tc in m.tool_calls %}
+{%- if tc.function %}
+    {%- set tc = tc.function %}
+{%- endif %}
+{{ '\n<tool_call>' + tc.name }}
+{% set _args = tc.arguments %}
+{% for k, v in _args.items() %}
+<arg_key>{{ k }}</arg_key>
+<arg_value>{{ v | tojson if v is not string else v }}</arg_value>
+{% endfor %}
+</tool_call>{% endfor %}
+{% endif %}
+{%- elif m.role == 'tool' -%}
+{%- if m.content is string -%}
+{%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}
+    {{- '<|observation|>' }}
+{%- endif %}
+{{- '\n<tool_response>\n' }}
+{{- m.content }}
+{{- '\n</tool_response>' }}
+{%- else -%}
+<|observation|>{% for tr in m.content %}
+
+<tool_response>
+{{ tr.output if tr.output is defined else tr }}
+</tool_response>{% endfor -%}
+{% endif -%}
+{%- elif m.role == 'system' -%}
+<|system|>
+{{ visible_text(m.content) }}
+{%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    <|assistant|>{{- '\n<think></think>' if (enable_thinking is defined and not enable_thinking) else '' -}}
+{%- endif -%}

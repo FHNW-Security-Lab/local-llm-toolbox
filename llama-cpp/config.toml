@@ -57,12 +57,19 @@ direct_io = true
 # Needed by models that ship Jinja-based prompt formats (most modern ones).
 jinja = true
 
+# Model preset file — per-model overrides for chat templates, etc.
+# Models without an entry use their embedded GGUF template.
+model_preset = "templates/model-presets.conf"
+
 # Flash Attention — faster attention on supported GPUs.
 # Auto-enabled with ROCm. Uncomment for CUDA/Vulkan if your GPU supports it.
 # flash_attn = true
 
 # Bind address. Default is localhost only. Set to 0.0.0.0 for network access.
 # host = "0.0.0.0"
+
+# API key for authentication. Clients must send this in the Authorization header.
+# api_key = "your-secret-key-here"
 
 
 # ── Distributed inference (RPC) ─────────────────────────────────────
