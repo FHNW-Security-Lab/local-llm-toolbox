@@ -56,6 +56,7 @@ build_server_cmd() {
     val=$(get server port)        ; [[ -n "$val" ]] && cmd+=(--port "$val")
     val=$(get server gpu_layers)  ; [[ -n "$val" ]] && cmd+=(-ngl "$val")
     val=$(get server context_size); [[ -n "$val" ]] && cmd+=(-c "$val")
+    val=$(get server parallel)    ; [[ -n "$val" ]] && cmd+=(-np "$val")
     val=$(get server cache_type_k); [[ -n "$val" ]] && cmd+=(-ctk "$val")
     val=$(get server cache_type_v); [[ -n "$val" ]] && cmd+=(-ctv "$val")
     val=$(get server host)        ; [[ -n "$val" ]] && cmd+=(--host "$val")
