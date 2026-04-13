@@ -70,6 +70,7 @@ build_server_cmd() {
     [[ "$(get server direct_io)"  == "true" ]] && cmd+=(--direct-io)
     [[ "$(get server jinja)"      == "true" ]] && cmd+=(--jinja)
     [[ "$(get server flash_attn)" == "true" ]] && cmd+=(-fa)
+    [[ "$(get server fit)"        == "false" ]] && cmd+=(-fit off)
 
     echo "${cmd[@]}"
 }

@@ -66,6 +66,12 @@ jinja = true
 # Models without an entry use their embedded GGUF template.
 model_preset = "templates/model-presets.conf"
 
+# Automatic parameter fitting — llama.cpp probes GPU memory to decide how
+# many layers to offload. Some model architectures (e.g. Gemma 4) exceed
+# ggml's GGML_SCHED_MAX_SPLIT_INPUTS limit during the probe and crash.
+# Set to false to disable and rely on gpu_layers instead.
+# fit = false
+
 # Flash Attention — faster attention on supported GPUs.
 # Auto-enabled with ROCm. Uncomment for CUDA/Vulkan if your GPU supports it.
 # flash_attn = true
