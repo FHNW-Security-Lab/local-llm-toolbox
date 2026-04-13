@@ -16,6 +16,9 @@ Thumbs.db
 *.swo
 *~
 
+# Local config (per-machine overrides — copy from config.example.toml)
+llama-cpp/config.toml
+
 # Models (large files)
 *.gguf
 *.onnx

@@ -47,7 +47,7 @@ parallel = 1
 # KV cache quantization — trade quality for memory.
 # Options: f16 (default, best quality), q8_0, q4_0 (most compact)
 # q4_0 works well in practice with minimal quality loss.
-cache_type_k = "q8_0"
+cache_type_k = "f16"
 cache_type_v = "f16"
 
 # Disable memory-mapped I/O. Required when using RPC workers.
@@ -70,7 +70,7 @@ model_preset = "templates/model-presets.conf"
 # many layers to offload. Some model architectures (e.g. Gemma 4) exceed
 # ggml's GGML_SCHED_MAX_SPLIT_INPUTS limit during the probe and crash.
 # Set to false to disable and rely on gpu_layers instead.
-# fit = false
+fit = false
 
 # Flash Attention — faster attention on supported GPUs.
 # Auto-enabled with ROCm. Uncomment for CUDA/Vulkan if your GPU supports it.

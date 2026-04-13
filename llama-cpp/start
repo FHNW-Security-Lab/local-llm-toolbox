@@ -88,9 +88,14 @@ build_rpc_cmd() {
 # ── Main ─────────────────────────────────────────────────────────────
 
 if [[ ! -f "$CONFIG" ]]; then
-    echo -e "${RED}Config not found: $CONFIG${NC}"
-    echo "Copy config.toml.example to config.toml and adjust."
-    exit 1
+    if [[ -f "config.example.toml" ]]; then
+        cp config.example.toml "$CONFIG"
+        echo -e "${YELLOW}Created $CONFIG from config.example.toml — edit it to customize.${NC}"
+    else
+        echo -e "${RED}Config not found: $CONFIG${NC}"
+        echo "Copy config.example.toml to config.toml and adjust."
+        exit 1
+    fi
 fi
 
 # Allow direct mode selection: ./start server | ./start rpc
